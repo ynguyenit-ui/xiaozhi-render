@@ -124,143 +124,77 @@ let jobs=0;
 function extractUncached(target, flat = false) {
   if (jobs >= 2) return Promise.reject(Error('Extractor busy'));
   jobs++;
-
   return new Promise((resolve, reject) => {
     const args = [
-  '-m', 'yt_dlp',
-  '--ignore-config',
-  '--no-warnings',
-  '--no-playlist',
-  '--socket-timeout', '8',
-  '--retries', '0',
-  '--extractor-retries', '0',
-  '--skip-download',
-  '--dump-single-json'
-];
+      '-m', 'yt_dlp', '--ignore-config', '--no-warnings',
+      '--no-playlist', '--socket-timeout', '8', '--retries', '0',
+      '--extractor-retries', '0',
+      '--skip-download', '--dump-single-json'
+    ];
     const started = Date.now();
-
-    if (process.env.DEBUG_EXTRACTOR === 'true') {
-      args.push('--verbose');
-    }
-
-    if (
-      /^https:\/\/(?:[^/]+\.)?youtube\.com\//i.test(target) ||
-      target.startsWith('ytsearch')
-    ) {
+    if (process.env.DEBUG_EXTRACTOR === 'true') args.push('--verbose');
+    if (/^https:\/\/(?:[^/]+\.)?youtube\.com\//i.test(target) || target.startsWith('ytsearch')) {
       args.push('--js-runtimes', 'node');
     }
-
-    if (flat) {
-      args.push('--flat-playlist');
-    } else {
-      args.push(
-        '-f',
-        'bestaudio[protocol=https]/bestaudio[protocol=http]/' +
-        'best[protocol=https]/best[protocol=http]'
-      );
-    }
-
+    if (flat) args.push('--flat-playlist');
+    else args.push('-f', 'bestaudio[protocol=https]/bestaudio[protocol=http]/best[protocol=https]/best[protocol=http]');
     args.push('--', target);
-
-    const p = spawn(
-      process.env.PYTHON_PATH || 'python3',
-      args,
-      { stdio: ['ignore', 'pipe', 'pipe'] }
-    );
-
-    let out = '';
-    let err = '';
-    let done = false;
-
+    const p = spawn(process.env.PYTHON_PATH || 'python3', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', err = '', done = false;
     const timeout = flat
       ? setting('SC_SEARCH_TIMEOUT_MS', 8000, 1000, 30000)
       : setting('AUDIO_EXTRACT_TIMEOUT_MS', 12000, 1000, 30000);
-
     const timer = setTimeout(() => {
       p.kill('SIGKILL');
-      const e = Error('Extractor timeout');
-      e.code = 'SOURCE_TIMEOUT';
+      const e = Error('Extractor timeout'); e.code = 'SOURCE_TIMEOUT';
       finish(e);
     }, timeout);
-
     function finish(e, data) {
       if (done) return;
-
-      done = true;
-      clearTimeout(timer);
-      jobs--;
-
+      done = true; clearTimeout(timer); jobs--;
       if (e) {
         if (process.env.DEBUG_EXTRACTOR === 'true') {
           const detail = err
             .split('\n')
-            .map(line =>
-              /authorization|cookie|api[_-]?key|access[_-]?token|refresh[_-]?token/i.test(line)
-                ? '[REDACTED]'
-                : line
-            )
+            .map(line => /authorization|cookie|api[_-]?key|access[_-]?token|refresh[_-]?token/i.test(line)
+              ? '[REDACTED]' : line)
             .join('\n')
             .replace(/https?:\/\/[^\s"'<>]+/gi, '[URL]')
             .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
             .slice(-2000);
-
           console.warn('[EXTRACT DETAIL]', JSON.stringify({
-            site: /youtube|ytsearch/i.test(target)
-              ? 'YouTube'
-              : 'SoundCloud',
+            site: /youtube|ytsearch/i.test(target) ? 'YouTube' : 'SoundCloud',
             stage: flat ? 'search' : 'audio',
             ms: Date.now() - started,
             code: e.code || 'EXTRACT_FAILED',
             detail: detail || 'No stderr before extractor ended'
           }));
         }
-
         reject(e);
-      } else {
-        resolve(data);
-      }
+      } else resolve(data);
     }
-
     p.stdout.on('data', d => {
       out += d;
-
-      if (out.length > 4000000) {
-        p.kill('SIGKILL');
-        finish(Error('Output too large'));
-      }
+      if (out.length > 4000000) { p.kill('SIGKILL'); finish(Error('Output too large')); }
     });
-
-    p.stderr.on('data', d => {
-      err = (err + d).slice(-16000);
-    });
-
+    p.stderr.on('data', d => { err = (err + d).slice(-16000); });
     p.once('error', e => finish(e));
-
     p.once('close', c => {
       if (c !== 0) {
         let e;
-
         if (/sign in|log in|confirm.*bot|not a bot|429/i.test(err)) {
-          e = Error('Provider blocked or needs login');
-          e.code = 'SOURCE_BLOCKED';
+          e = Error('Provider blocked or needs login'); e.code = 'SOURCE_BLOCKED';
         } else if (/403|forbidden/i.test(err)) {
-          e = Error('Provider HTTP 403: audio access denied');
-          e.code = 'SOURCE_FORBIDDEN';
+          e = Error('Provider HTTP 403: audio access denied'); e.code = 'SOURCE_FORBIDDEN';
         } else if (/javascript|js runtime|challenge|nsig/i.test(err)) {
-          e = Error('YouTube JS runtime/challenge failed');
-          e.code = 'SOURCE_RUNTIME';
+          e = Error('YouTube JS runtime/challenge failed'); e.code = 'SOURCE_RUNTIME';
         } else {
           e = Error('Provider extraction failed');
         }
-
         return finish(e);
       }
-
-      try {
-        finish(null, JSON.parse(out));
-      } catch {
-        finish(Error('Invalid provider response'));
-      }
+      try { finish(null, JSON.parse(out)); }
+      catch { finish(Error('Invalid provider response')); }
     });
   });
 }
