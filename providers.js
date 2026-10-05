@@ -525,23 +525,7 @@ async function probeUncached(source) {
     },
     signal: AbortSignal.timeout(8000),
     redirect: 'follow'
-  }
-                        async function probe(source) {
-  try {
-    return await probeUncached(source);
-  } catch (e) {
-    for (const [key, entry] of extractCache) {
-      if (!key.startsWith('audio:')) continue;
-
-      if (entry.data.url === source.url) {
-        extractCache.delete(key);
-      }
-    }
-
-    throw e;
-  }
-}
-                       );
+  });
 
   const type = r.headers.get('content-type') || '';
 
@@ -564,6 +548,22 @@ async function probeUncached(source) {
     }
   } finally {
     await reader.cancel().catch(() => {});
+  }
+}
+
+async function probe(source) {
+  try {
+    return await probeUncached(source);
+  } catch (e) {
+    for (const [key, entry] of extractCache) {
+      if (!key.startsWith('audio:')) continue;
+
+      if (entry.data.url === source.url) {
+        extractCache.delete(key);
+      }
+    }
+
+    throw e;
   }
 }
 
