@@ -211,13 +211,13 @@ async function searchArchive(song, artist) {
       );
 
       return mp3.map(f => ({
-        title:
-          text(f.title) ||
-          (mp3.length === 1
+              title: text(f.title) || (
+          mp3.length === 1
             ? text(doc.title)
             : f.name
                 .replace(/\.mp3$/i, '')
-                .replace(/[_-]/g, ' '')),
+                .replace(/[_-]/g, ' ')
+        ),
 
         artist: text(
           f.artist || doc.creator || m.metadata?.creator
