@@ -1,13 +1,12 @@
 import { spawn } from 'node:child_process';
 
-export const normalize = s =>
-  String(s || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[đĐ]/g, 'd')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
+export const normalize = s => String(s || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/[đĐ]/g, 'd')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim();
 
 const domains = [
   'youtube.com',
@@ -22,15 +21,13 @@ export function allowedPage(page) {
   try {
     const u = new URL(page);
 
-    return (
-      u.protocol === 'https:' &&
+    return u.protocol === 'https:' &&
       !u.username &&
       !u.password &&
       (!u.port || u.port === '443') &&
-      domains.some(
-        d => u.hostname === d || u.hostname.endsWith('.' + d)
-      )
-    );
+      domains.some(d =>
+        u.hostname === d || u.hostname.endsWith('.' + d)
+      );
   } catch {
     return false;
   }
@@ -59,16 +56,14 @@ export function rank(candidates, song, artist = '') {
       const title = normalize(t.title);
       const all = normalize(t.title + ' ' + (t.artist || ''));
 
-      const overlap =
-        tokens.filter(w => title.split(' ').includes(w)).length /
-        Math.max(tokens.length, 1);
+      const overlap = tokens.filter(w =>
+        title.split(' ').includes(w)
+      ).length / Math.max(tokens.length, 1);
 
-      const artistMatch =
-        !singer ||
-        singer
-          .split(' ')
-          .filter(Boolean)
-          .every(w => all.split(' ').includes(w));
+      const artistMatch = !singer ||
+        singer.split(' ').filter(Boolean).every(w =>
+          all.split(' ').includes(w)
+        );
 
       let score =
         overlap * 100 +
@@ -81,9 +76,7 @@ export function rank(candidates, song, artist = '') {
         }
       }
 
-      if (/official|chinh thuc/.test(title)) {
-        score += 8;
-      }
+      if (/official|chinh thuc/.test(title)) score += 8;
 
       if (t.duration && (t.duration < 60 || t.duration > 900)) {
         score -= 50;
@@ -96,8 +89,10 @@ export function rank(candidates, song, artist = '') {
         artistMatch
       };
     })
-    .filter(
-      t => t.overlap >= 0.75 && t.artistMatch && t.score >= 90
+    .filter(t =>
+      t.overlap >= 0.75 &&
+      t.artistMatch &&
+      t.score >= 90
     )
     .sort((a, b) => b.score - a.score);
 }
@@ -108,9 +103,7 @@ async function getJSON(url) {
     signal: AbortSignal.timeout(10000)
   });
 
-  if (!r.ok) {
-    throw Error(`HTTP ${r.status}`);
-  }
+  if (!r.ok) throw Error(`HTTP ${r.status}`);
 
   return r.json();
 }
@@ -141,10 +134,9 @@ async function searchAudius(song, artist) {
   const d = await getJSON(u);
 
   return (d.data || [])
-    .filter(
-      t =>
-        t.is_streamable !== false &&
-        /^[A-Za-z0-9_-]+$/.test(t.id)
+    .filter(t =>
+      t.is_streamable !== false &&
+      /^[A-Za-z0-9_-]+$/.test(t.id)
     )
     .map(t => ({
       title: t.title,
@@ -160,22 +152,21 @@ function duration(v) {
   if (!v) return 0;
 
   return String(v).includes(':')
-    ? String(v)
-        .split(':')
-        .reduce((a, n) => a * 60 + Number(n), 0)
+    ? String(v).split(':').reduce(
+        (a, n) => a * 60 + Number(n),
+        0
+      )
     : Number(v) || 0;
 }
 
 const searchCache = new Map();
 
 async function searchArchive(song, artist) {
-  const safe = s =>
-    String(s).replace(/["\\]/g, ' ').trim();
+  const safe = s => String(s).replace(/["\\]/g, ' ').trim();
 
   const q =
-    `mediatype:audio AND (` +
-    `title:"${safe(song)}" OR ` +
-    `title:"${safe(normalize(song))}")`;
+    `mediatype:audio AND ` +
+    `(title:"${safe(song)}" OR title:"${safe(normalize(song))}")`;
 
   const u = new URL('https://archive.org/advancedsearch.php');
 
@@ -194,7 +185,7 @@ async function searchArchive(song, artist) {
     docs.map(async doc => {
       const m = await getJSON(
         'https://archive.org/metadata/' +
-          encodeURIComponent(doc.identifier)
+        encodeURIComponent(doc.identifier)
       );
 
       if (
@@ -204,33 +195,29 @@ async function searchArchive(song, artist) {
         return [];
       }
 
-      const mp3 = (m.files || []).filter(
-        f =>
-          f.name?.toLowerCase().endsWith('.mp3') &&
-          !f.private &&
-          !f.is_private
+      const mp3 = (m.files || []).filter(f =>
+        f.name?.toLowerCase().endsWith('.mp3') &&
+        !f.private &&
+        !f.is_private
       );
 
       return mp3.map(f => ({
-              title: text(f.title) || (
+        title: text(f.title) || (
           mp3.length === 1
             ? text(doc.title)
             : f.name
                 .replace(/\.mp3$/i, '')
                 .replace(/[_-]/g, ' ')
         ),
-
         artist: text(
           f.artist || doc.creator || m.metadata?.creator
         ),
-
         duration: duration(f.length),
         provider: 'web',
         site: 'Internet Archive',
-
         source_page:
-          `https://archive.org/download/` +
-          `${encodeURIComponent(doc.identifier)}/` +
+          'https://archive.org/download/' +
+          encodeURIComponent(doc.identifier) + '/' +
           f.name.split('/').map(encodeURIComponent).join('/')
       }));
     })
@@ -261,15 +248,12 @@ function extract(target, flat = false) {
 
   return new Promise((resolve, reject) => {
     const args = [
-      '-m',
-      'yt_dlp',
+      '-m', 'yt_dlp',
       '--ignore-config',
       '--no-warnings',
       '--no-playlist',
-      '--socket-timeout',
-      '8',
-      '--retries',
-      '0',
+      '--socket-timeout', '8',
+      '--retries', '0',
       '--skip-download',
       '--dump-single-json'
     ];
@@ -280,9 +264,9 @@ function extract(target, flat = false) {
       args.push(
         '-f',
         'bestaudio[protocol=https]/' +
-          'bestaudio[protocol=http]/' +
-          'best[protocol=https]/' +
-          'best[protocol=http]'
+        'bestaudio[protocol=http]/' +
+        'best[protocol=https]/' +
+        'best[protocol=http]'
       );
     }
 
@@ -298,7 +282,7 @@ function extract(target, flat = false) {
     let err = '';
     let done = false;
 
-    const finish = (e, data) => {
+    const finish = (e, d) => {
       if (done) return;
 
       done = true;
@@ -306,7 +290,7 @@ function extract(target, flat = false) {
       jobs--;
 
       if (e) reject(e);
-      else resolve(data);
+      else resolve(d);
     };
 
     const timer = setTimeout(() => {
@@ -329,15 +313,13 @@ function extract(target, flat = false) {
 
     p.once('error', e => finish(e));
 
-    p.once('close', code => {
-      if (code !== 0) {
-        return finish(
-          Error(
-            /sign in|bot|403|429/i.test(err)
-              ? 'Provider blocked or needs login'
-              : 'Provider extraction failed'
-          )
-        );
+    p.once('close', c => {
+      if (c !== 0) {
+        return finish(Error(
+          /sign in|bot|403|429/i.test(err)
+            ? 'Provider blocked or needs login'
+            : 'Provider extraction failed'
+        ));
       }
 
       try {
@@ -390,7 +372,6 @@ export async function webAudio(page) {
 
 export async function searchWeb(song, artist = '') {
   const key = normalize(song) + '|' + normalize(artist);
-
   const cached = searchCache.get(key);
 
   if (cached && cached.expires > Date.now()) {
@@ -418,12 +399,11 @@ export async function searchWeb(song, artist = '') {
     }
   }
 
-  // Chỉ tìm YouTube nếu bạn chủ động bật biến này.
+  // Chế độ tìm YouTube cũ; để KEYLESS_YOUTUBE=false.
   if (process.env.KEYLESS_YOUTUBE === 'true') {
     try {
       const d = await extract(
-        'ytsearch8:' +
-          [song, artist].filter(Boolean).join(' '),
+        'ytsearch8:' + [song, artist].filter(Boolean).join(' '),
         true
       );
 
@@ -434,15 +414,11 @@ export async function searchWeb(song, artist = '') {
           duration: t.duration,
           provider: 'web',
           site: 'YouTube',
-          source_page:
-            'https://www.youtube.com/watch?v=' + t.id
+          source_page: 'https://www.youtube.com/watch?v=' + t.id
         });
       }
     } catch (e) {
-      errors.push({
-        site: 'YouTube',
-        error: e.message
-      });
+      errors.push({ site: 'YouTube', error: e.message });
     }
   }
 
@@ -490,10 +466,7 @@ async function probe(source) {
     /json|text\/html/i.test(type)
   ) {
     await r.body?.cancel();
-
-    throw Error(
-      `Audio unavailable: HTTP ${r.status}`
-    );
+    throw Error(`Audio unavailable: HTTP ${r.status}`);
   }
 
   const reader = r.body.getReader();
@@ -508,10 +481,12 @@ async function probe(source) {
     await reader.cancel().catch(() => {});
   }
 }
-async function searchSoundCloud(song, artist = '') {
-  const query = [song, artist].filter(Boolean).join(' ');
 
-  const data = await extract('scsearch8:' + query, true);
+async function searchSoundCloud(song, artist = '') {
+  const data = await extract(
+    'scsearch8:' + [song, artist].filter(Boolean).join(' '),
+    true
+  );
 
   const tracks = (data.entries || []).map(t => ({
     title: t.title || '',
@@ -525,70 +500,153 @@ async function searchSoundCloud(song, artist = '') {
   return rank(tracks, song, artist);
 }
 
-export async function resolveWeb(song, artist) {
-  const result = await searchWeb(song, artist);
-  const errors = [...result.errors];
+const youtubeCache = new Map();
 
-  // Thử nguồn hiện tại trước.
-  for (const track of result.candidates.slice(0, 3)) {
-    try {
-      const source = await webAudio(track.source_page);
-      await probe(source);
+async function searchYouTubeAPI(song, artist = '') {
+  const apiKey = process.env.YOUTUBE_API_KEY;
 
-      return {
-        ...track,
-        id: Buffer.from(track.source_page).toString('base64url')
-      };
-    } catch (e) {
-      errors.push({
-        site: track.site,
-        error: e.message
-      });
-    }
+  if (!apiKey) throw Error('Set YOUTUBE_API_KEY');
+
+  const key = normalize(song) + '|' + normalize(artist);
+  const cached = youtubeCache.get(key);
+
+  if (cached && cached.expires > Date.now()) {
+    return cached.tracks;
   }
 
-  // Chỉ tìm SoundCloud khi nguồn hiện tại không phát được.
-  if (process.env.ENABLE_SOUNDCLOUD !== 'false') {
-    console.log('[FALLBACK] Trying SoundCloud:', song);
+  const u = new URL(
+    'https://www.googleapis.com/youtube/v3/search'
+  );
+
+  for (const [name, value] of Object.entries({
+    part: 'snippet',
+    type: 'video',
+    maxResults: '8',
+    q: [song, artist].filter(Boolean).join(' '),
+    relevanceLanguage: 'vi',
+    regionCode: 'VN',
+    key: apiKey
+  })) {
+    u.searchParams.set(name, value);
+  }
+
+  let data;
+
+  try {
+    data = await getJSON(u);
+  } catch {
+    throw Error(
+      'YouTube API failed: check key, restrictions or quota'
+    );
+  }
+
+  const tracks = rank(
+    (data.items || [])
+      .filter(t =>
+        /^[A-Za-z0-9_-]{11}$/.test(t.id?.videoId || '') &&
+        t.snippet?.liveBroadcastContent !== 'live' &&
+        t.snippet?.liveBroadcastContent !== 'upcoming'
+      )
+      .map(t => ({
+        title: t.snippet?.title || '',
+        artist: t.snippet?.channelTitle || '',
+        duration: 0,
+        provider: 'web',
+        site: 'YouTube',
+        source_page:
+          'https://www.youtube.com/watch?v=' + t.id.videoId
+      })),
+    song,
+    artist
+  );
+
+  if (youtubeCache.size >= 100) {
+    youtubeCache.delete(youtubeCache.keys().next().value);
+  }
+
+  youtubeCache.set(key, {
+    tracks,
+    expires: Date.now() + 1800000
+  });
+
+  return tracks;
+}
+
+export async function resolveWeb(song, artist = '') {
+  const errors = [];
+
+  async function trySource(site, search) {
+    console.log('[SEARCH SOURCE] Trying ' + site + ':', song);
 
     try {
-      const candidates = await searchSoundCloud(song, artist);
+      const candidates = await search();
 
-      for (const track of candidates.slice(0, 3)) {
+      if (!candidates.length) {
+        errors.push({ site, error: 'No matching track' });
+      }
+
+      for (const t of candidates.slice(0, 3)) {
         try {
-          const source = await webAudio(track.source_page);
-          await probe(source);
+          await probe(await webAudio(t.source_page));
 
           console.log(
-            '[FALLBACK] SoundCloud selected:',
-            track.title
+            '[SEARCH SOURCE] Selected ' + t.site + ':',
+            t.title
           );
 
           return {
-            ...track,
-            id: Buffer.from(track.source_page).toString('base64url')
+            ...t,
+            id: Buffer.from(t.source_page).toString('base64url')
           };
         } catch (e) {
           errors.push({
-            site: 'SoundCloud',
+            site: t.site || site,
             error: e.message
           });
         }
       }
-
-      if (!candidates.length) {
-        errors.push({
-          site: 'SoundCloud',
-          error: 'No matching track'
-        });
-      }
     } catch (e) {
-      errors.push({
-        site: 'SoundCloud',
-        error: e.message
-      });
+      errors.push({ site, error: e.message });
     }
+
+    return null;
   }
+
+  // 1. SoundCloud
+  if (process.env.ENABLE_SOUNDCLOUD !== 'false') {
+    const track = await trySource(
+      'SoundCloud',
+      () => searchSoundCloud(song, artist)
+    );
+
+    if (track) return track;
+  }
+
+  // 2. YouTube Data API
+  if (process.env.ENABLE_YOUTUBE === 'true') {
+    const track = await trySource(
+      'YouTube',
+      () => searchYouTubeAPI(song, artist)
+    );
+
+    if (track) return track;
+  }
+
+  // 3. Audius / Internet Archive
+  const track = await trySource(
+    'Audius / Internet Archive',
+    async () => {
+      const result = await searchWeb(song, artist);
+      errors.push(...result.errors);
+
+      return result.candidates.filter(t =>
+        t.site === 'Audius' ||
+        t.site === 'Internet Archive'
+      );
+    }
+  );
+
+  if (track) return track;
 
   console.warn('[PROVIDERS]', JSON.stringify(errors));
 
