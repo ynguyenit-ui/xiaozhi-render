@@ -14,7 +14,8 @@ const domains = [
   'zingmp3.vn',
   'nhaccuatui.com',
   'audius.co',
-  'archive.org'
+  'archive.org',
+  'soundcloud.com'
 ];
 
 export function allowedPage(page) {
@@ -507,31 +508,89 @@ async function probe(source) {
     await reader.cancel().catch(() => {});
   }
 }
+async function searchSoundCloud(song, artist = '') {
+  const query = [song, artist].filter(Boolean).join(' ');
+
+  const data = await extract('scsearch8:' + query, true);
+
+  const tracks = (data.entries || []).map(t => ({
+    title: t.title || '',
+    artist: (t.artists || []).join(', ') || t.uploader || '',
+    duration: t.duration || 0,
+    provider: 'web',
+    site: 'SoundCloud',
+    source_page: t.webpage_url || t.url || ''
+  }));
+
+  return rank(tracks, song, artist);
+}
 
 export async function resolveWeb(song, artist) {
-  const r = await searchWeb(song, artist);
-  const errors = [...r.errors];
+  const result = await searchWeb(song, artist);
+  const errors = [...result.errors];
 
-  for (const t of r.candidates.slice(0, 3)) {
+  // Thử nguồn hiện tại trước.
+  for (const track of result.candidates.slice(0, 3)) {
     try {
-      await probe(await webAudio(t.source_page));
+      const source = await webAudio(track.source_page);
+      await probe(source);
 
       return {
-        ...t,
-        id: Buffer.from(t.source_page).toString('base64url')
+        ...track,
+        id: Buffer.from(track.source_page).toString('base64url')
       };
     } catch (e) {
       errors.push({
-        site: t.site,
+        site: track.site,
         error: e.message
       });
     }
   }
 
-  console.warn(
-    '[PROVIDERS]',
-    JSON.stringify(errors)
-  );
+  // Chỉ tìm SoundCloud khi nguồn hiện tại không phát được.
+  if (process.env.ENABLE_SOUNDCLOUD !== 'false') {
+    console.log('[FALLBACK] Trying SoundCloud:', song);
+
+    try {
+      const candidates = await searchSoundCloud(song, artist);
+
+      for (const track of candidates.slice(0, 3)) {
+        try {
+          const source = await webAudio(track.source_page);
+          await probe(source);
+
+          console.log(
+            '[FALLBACK] SoundCloud selected:',
+            track.title
+          );
+
+          return {
+            ...track,
+            id: Buffer.from(track.source_page).toString('base64url')
+          };
+        } catch (e) {
+          errors.push({
+            site: 'SoundCloud',
+            error: e.message
+          });
+        }
+      }
+
+      if (!candidates.length) {
+        errors.push({
+          site: 'SoundCloud',
+          error: 'No matching track'
+        });
+      }
+    } catch (e) {
+      errors.push({
+        site: 'SoundCloud',
+        error: e.message
+      });
+    }
+  }
+
+  console.warn('[PROVIDERS]', JSON.stringify(errors));
 
   return null;
 }
