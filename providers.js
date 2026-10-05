@@ -121,20 +121,57 @@ async function extract(target, flat = false) {
 }
 
 let jobs=0;
-function extractUncached(target,flat=false) {
-  if(jobs>=2)return Promise.reject(Error('Extractor busy'));jobs++;
-  return new Promise((resolve,reject)=>{
-    const args=['-m','yt_dlp','--ignore-config','--no-warnings','--no-playlist','--socket-timeout','8','--retries','0','--skip-download','--dump-single-json'];
-    if(flat)args.push('--flat-playlist');else args.push('-f','bestaudio[protocol=https]/bestaudio[protocol=http]/best[protocol=https]/best[protocol=http]');
-    args.push('--',target);
-    const p=spawn(process.env.PYTHON_PATH || 'python3',args,{stdio:['ignore','pipe','pipe']});
-    let out='',err='',done=false;
-    const finish=(e,d)=>{if(done)return;done=true;clearTimeout(timer);jobs--;e?reject(e):resolve(d);};
-    const timeout = flat ? setting('SC_SEARCH_TIMEOUT_MS', 8000, 1000, 30000) : setting('AUDIO_EXTRACT_TIMEOUT_MS', 12000, 1000, 30000);
-    const timer=setTimeout(()=>{p.kill('SIGKILL');finish(Error('Extractor timeout'));},timeout);
-    p.stdout.on('data',d=>{out+=d;if(out.length>4_000_000){p.kill('SIGKILL');finish(Error('Output too large'));}});
-    p.stderr.on('data',d=>{err=(err+d).slice(-1000);});p.once('error',e=>finish(e));
-    p.once('close',c=>{if(c!==0)return finish(Error(/sign in|bot|403|429/i.test(err)?'Provider blocked or needs login':'Provider extraction failed'));try{finish(null,JSON.parse(out));}catch{finish(Error('Invalid provider response'));}});
+function extractUncached(target, flat = false) {
+  if (jobs >= 2) return Promise.reject(Error('Extractor busy'));
+  jobs++;
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-m', 'yt_dlp', '--ignore-config', '--no-warnings',
+      '--no-playlist', '--socket-timeout', '8', '--retries', '0',
+      '--skip-download', '--dump-single-json'
+    ];
+    if (/^https:\/\/(?:[^/]+\.)?youtube\.com\//i.test(target) || target.startsWith('ytsearch')) {
+      args.push('--js-runtimes', 'node');
+    }
+    if (flat) args.push('--flat-playlist');
+    else args.push('-f', 'bestaudio[protocol=https]/bestaudio[protocol=http]/best[protocol=https]/best[protocol=http]');
+    args.push('--', target);
+    const p = spawn(process.env.PYTHON_PATH || 'python3', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', err = '', done = false;
+    const timeout = flat
+      ? setting('SC_SEARCH_TIMEOUT_MS', 8000, 1000, 30000)
+      : setting('AUDIO_EXTRACT_TIMEOUT_MS', 12000, 1000, 30000);
+    const timer = setTimeout(() => {
+      p.kill('SIGKILL'); finish(Error('Extractor timeout'));
+    }, timeout);
+    function finish(e, data) {
+      if (done) return;
+      done = true; clearTimeout(timer); jobs--;
+      if (e) reject(e); else resolve(data);
+    }
+    p.stdout.on('data', d => {
+      out += d;
+      if (out.length > 4000000) { p.kill('SIGKILL'); finish(Error('Output too large')); }
+    });
+    p.stderr.on('data', d => { err = (err + d).slice(-4000); });
+    p.once('error', e => finish(e));
+    p.once('close', c => {
+      if (c !== 0) {
+        let e;
+        if (/sign in|log in|confirm.*bot|not a bot|429/i.test(err)) {
+          e = Error('Provider blocked or needs login'); e.code = 'SOURCE_BLOCKED';
+        } else if (/403|forbidden/i.test(err)) {
+          e = Error('Provider HTTP 403: audio access denied'); e.code = 'SOURCE_FORBIDDEN';
+        } else if (/javascript|js runtime|challenge|nsig/i.test(err)) {
+          e = Error('YouTube JS runtime/challenge failed'); e.code = 'SOURCE_RUNTIME';
+        } else {
+          e = Error('Provider extraction failed');
+        }
+        return finish(e);
+      }
+      try { finish(null, JSON.parse(out)); }
+      catch { finish(Error('Invalid provider response')); }
+    });
   });
 }
 export async function webAudio(page) {
@@ -229,6 +266,7 @@ async function searchYouTubeAPI(song, artist = '') {
 const resolvedCache = new Map();
 const resolvedPending = new Map();
 const failedAudio = new Map();
+const blockedUntil = new Map();
 
 export async function resolveWeb(song, artist = '', options = {}) {
   const request = parseMusicRequest(song, artist, options.preferred || options.source || '');
@@ -282,20 +320,26 @@ async function resolveFresh({ song, artist, preferred }) {
   // Search YouTube metadata while SoundCloud is working; selection still follows order.
   if (preferred !== 'youtube' && process.env.PARALLEL_SEARCH !== 'false') {
     if (enabledSC) start('SoundCloud');
-    if (enabledYT) start('YouTube');
+    if (enabledYT && (blockedUntil.get('YouTube') || 0) <= Date.now()) start('YouTube');
   }
   console.log('[SEARCH ORDER]', order.join(' -> '));
   for (const site of order) {
     if (site === 'SoundCloud' && !enabledSC) continue;
     if (site === 'YouTube' && !enabledYT) continue;
+    if ((blockedUntil.get(site) || 0) > Date.now()) {
+      console.warn('[SOURCE SKIP]', site, 'Temporary cooldown after login/bot block');
+      continue;
+    }
     const sourceStarted = Date.now();
     console.log('[SEARCH SOURCE] Trying ' + site + ':', song);
     const outcome = await start(site);
     if (outcome.error) {
       errors.push({ site, error: outcome.error.message });
+      console.warn('[SOURCE ERROR]', site, outcome.error.message);
       continue;
     }
     const candidates = outcome.candidates;
+    console.log('[SOURCE RESULTS]', site, 'matched=' + candidates.length);
     if (!candidates.length) errors.push({ site, error: 'No matching track' });
     for (const t of candidates.slice(0, setting('SOURCE_CANDIDATES', 2, 1, 3))) {
       if ((failedAudio.get(t.source_page) || 0) > Date.now()) continue;
@@ -307,6 +351,12 @@ async function resolveFresh({ song, artist, preferred }) {
         if (failedAudio.size >= 100) failedAudio.delete(failedAudio.keys().next().value);
         if (!/busy/i.test(e.message)) failedAudio.set(t.source_page, Date.now() + 30000);
         errors.push({ site: t.site || site, error: e.message });
+        console.warn('[SOURCE ERROR]', site, e.code || 'AUDIO_FAILED', e.message);
+        if (e.code === 'SOURCE_BLOCKED') {
+          blockedUntil.set(site, Date.now() + 120000);
+          break;
+        }
+        if (e.code === 'SOURCE_FORBIDDEN' || e.code === 'SOURCE_RUNTIME') break;
       }
     }
     console.log('[SEARCH SOURCE DONE]', site, Date.now() - sourceStarted, 'ms');
