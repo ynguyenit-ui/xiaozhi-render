@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { resolveWeb, webAudio, searchWeb, allowedPage } from './providers.js';
+import { resolveWeb, webAudio, searchWeb, allowedPage, parseMusicRequest } from './providers.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const catalog = JSON.parse(fs.readFileSync(path.join(root, 'catalog.json'), 'utf8'));
@@ -39,11 +39,11 @@ function audiusURL(route) {
   if (process.env.AUDIUS_API_KEY) u.searchParams.set('api_key',process.env.AUDIUS_API_KEY);
   return u;
 }
-async function resolveTrack(song, artist) {
-  const local = select(catalog, song, artist);
+async function resolveTrack(song, artist, preferred = '') {
+  const local = preferred ? null : select(catalog, song, artist);
   if (local) return {...local, provider:'catalog'};
   if (process.env.ENABLE_WEB_SEARCH !== 'false') {
-    const track = await resolveWeb(song,artist);
+    const track = await resolveWeb(song,artist,{preferred});
     if(track) return track;
   }
   if (process.env.ENABLE_AUDIUS !== 'true') return null;
@@ -138,16 +138,19 @@ const server = http.createServer(async (req,res) => {
       return json(res,200,await searchWeb(song,artist));
     }
     if (['/stream_pcm','/search'].includes(u.pathname)) {
-      const song = (u.searchParams.get('song') || '').trim();
-      const artist = (u.searchParams.get('artist') || u.searchParams.get('singer') || '').trim();
+      const {song, artist, preferred} = parseMusicRequest(
+        u.searchParams.get('song') || '',
+        u.searchParams.get('artist') || u.searchParams.get('singer') || '',
+        u.searchParams.get('source') || u.searchParams.get('site') || ''
+      );
       if (!song || song.length > 200 || artist.length > 200) return json(res,400,{error:'Missing song or name too long'});
-      console.log('[SEARCH]',JSON.stringify({song,artist,user_agent:req.headers['user-agent'],mode}));
-      const track = await resolveTrack(song,artist);
+      console.log('[SEARCH]',JSON.stringify({song,artist,preferred,user_agent:req.headers['user-agent'],mode}));
+      const track = await resolveTrack(song,artist,preferred);
       if (!track) return json(res,404,{error:'Không tìm thấy bài khớp. Thêm bài vào catalog.json hoặc thử tên khác.',title:song,artist});
       if (res.destroyed) return;
       if (u.pathname === '/stream_pcm' && mode !== 'json') return await stream(track,mode,req,res);
       const p = audioPath(track);
-      return json(res,200,{title:track.title,artist:track.artist,audio_url:p,audio_full_url:base ? base+p : p,m3u8_url:'',lyric_url:'',cover_url:'',duration:track.duration || 0,from_cache:track.provider==='catalog',source_page:track.source_page || '',ip:''});
+      return json(res,200,{title:track.title,artist:track.artist,audio_url:p,audio_full_url:base ? base+p : p,m3u8_url:'',lyric_url:'',cover_url:'',duration:track.duration || 0,from_cache:track.provider==='catalog' || !!track.from_cache,source_page:track.source_page || '',site:track.site || track.provider,ip:''});
     }
     if (u.pathname === '/audio') {
       const id = u.searchParams.get('id'), provider = u.searchParams.get('provider'), format = u.searchParams.get('format') || 'mp3';
