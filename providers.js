@@ -236,10 +236,79 @@ async function searchArchive(song, artist) {
 
   return candidates;
 }
+const extractCache = new Map();
+const extractPending = new Map();
 
+async function extract(target, flat = false) {
+  const key = (flat ? 'search:' : 'audio:') + target;
+  const cached = extractCache.get(key);
+
+  if (cached && cached.expires > Date.now()) {
+    console.log('[CACHE]', flat ? 'Search hit' : 'Audio link hit');
+    return cached.data;
+  }
+
+  extractCache.delete(key);
+
+  if (extractPending.has(key)) {
+    return extractPending.get(key);
+  }
+
+  const task = (async () => {
+    const data = await extractUncached(target, flat);
+
+    let ttl = flat
+      ? ((data.entries || []).length ? 300000 : 60000)
+      : 90000;
+
+    if (!flat) {
+      if (
+        data.is_live ||
+        data.has_drm ||
+        !/^https?:\/\//.test(data.url || '')
+      ) {
+        return data;
+      }
+
+      const u = new URL(data.url);
+
+      for (const name of ['expire', 'expires', 'Expires']) {
+        const seconds = Number(u.searchParams.get(name));
+
+        if (seconds > 0) {
+          ttl = Math.min(
+            ttl,
+            seconds * 1000 - Date.now() - 15000
+          );
+        }
+      }
+    }
+
+    if (ttl > 0) {
+      if (extractCache.size >= 100) {
+        extractCache.delete(extractCache.keys().next().value);
+      }
+
+      extractCache.set(key, {
+        data,
+        expires: Date.now() + ttl
+      });
+    }
+
+    return data;
+  })();
+
+  extractPending.set(key, task);
+
+  try {
+    return await task;
+  } finally {
+    extractPending.delete(key);
+  }
+}
 let jobs = 0;
 
-function extract(target, flat = false) {
+function extractUncached(target, flat = false) {
   if (jobs >= 2) {
     return Promise.reject(Error('Extractor busy'));
   }
@@ -448,7 +517,7 @@ export async function searchWeb(song, artist = '') {
   return result;
 }
 
-async function probe(source) {
+async function probeUncached(source) {
   const r = await fetch(source.url, {
     headers: {
       ...(source.headers || {}),
@@ -456,7 +525,23 @@ async function probe(source) {
     },
     signal: AbortSignal.timeout(8000),
     redirect: 'follow'
-  });
+  }
+                        async function probe(source) {
+  try {
+    return await probeUncached(source);
+  } catch (e) {
+    for (const [key, entry] of extractCache) {
+      if (!key.startsWith('audio:')) continue;
+
+      if (entry.data.url === source.url) {
+        extractCache.delete(key);
+      }
+    }
+
+    throw e;
+  }
+}
+                       );
 
   const type = r.headers.get('content-type') || '';
 
