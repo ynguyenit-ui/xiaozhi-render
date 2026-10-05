@@ -1,5 +1,8 @@
 // SoundCloud -> YouTube -> Audius / Internet Archive; ưu tiên YouTube theo yêu cầu.
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 export const normalize = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[đĐ]/g,'d').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 function setting(name, fallback, min, max) {
   const n = Number(process.env[name]);
@@ -121,8 +124,35 @@ async function extract(target, flat = false) {
 }
 
 let jobs=0;
+function prepareYouTubeCookies(target) {
+  const configured = process.env.YOUTUBE_COOKIES_FILE;
+  const youtube = /^https:\/\/(?:[^/]+\.)?youtube\.com\//i.test(target) || target.startsWith('ytsearch');
+  if (!configured || !youtube) return null;
+  let directory;
+  try {
+    const data = fs.readFileSync(configured, 'utf8');
+    const header = data.replace(/^\uFEFF/, '').split(/\r?\n/)[0].trim();
+    if (!/^# (?:Netscape HTTP Cookie File|HTTP Cookie File)$/.test(header)) {
+      throw Error('Invalid cookie format');
+    }
+    // yt-dlp may update the jar; Render Secret Files must stay unchanged.
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaozhi-yt-'));
+    const file = path.join(directory, 'cookies.txt');
+    fs.writeFileSync(file, data.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n'), { mode: 0o600 });
+    return { file, cleanup: () => fs.rmSync(directory, { recursive: true, force: true }) };
+  } catch {
+    if (directory) fs.rmSync(directory, { recursive: true, force: true });
+    const e = Error('YouTube cookie file unreadable or not Netscape format');
+    e.code = 'SOURCE_COOKIE_CONFIG';
+    throw e;
+  }
+}
+
 function extractUncached(target, flat = false) {
   if (jobs >= 2) return Promise.reject(Error('Extractor busy'));
+  let cookieJar;
+  try { cookieJar = prepareYouTubeCookies(target); }
+  catch (e) { return Promise.reject(e); }
   jobs++;
   return new Promise((resolve, reject) => {
     const args = [
@@ -131,6 +161,7 @@ function extractUncached(target, flat = false) {
       '--extractor-retries', '0',
       '--skip-download', '--dump-single-json'
     ];
+    if (cookieJar) args.push('--cookies', cookieJar.file);
     const started = Date.now();
     if (process.env.DEBUG_EXTRACTOR === 'true') args.push('--verbose');
     if (/^https:\/\/(?:[^/]+\.)?youtube\.com\//i.test(target) || target.startsWith('ytsearch')) {
@@ -152,6 +183,7 @@ function extractUncached(target, flat = false) {
     function finish(e, data) {
       if (done) return;
       done = true; clearTimeout(timer); jobs--;
+      try { cookieJar?.cleanup(); } catch {}
       if (e) {
         if (process.env.DEBUG_EXTRACTOR === 'true') {
           const detail = err
