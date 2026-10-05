@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: xiaozhi-music
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: RESPONSE_MODE
+        value: json
+      - key: SAMPLE_RATE
+        value: "24000"
+      - key: ENABLE_AUDIUS
+        value: "false"
+      - key: ENABLE_WEB_SEARCH
+        value: "true"
+      - key: BRAVE_SEARCH_API_KEY
+        sync: false
