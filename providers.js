@@ -127,11 +127,16 @@ function extractUncached(target, flat = false) {
 
   return new Promise((resolve, reject) => {
     const args = [
-      '-m', 'yt_dlp', '--ignore-config', '--no-warnings',
-      '--no-playlist', '--socket-timeout', '8', '--retries', '0',
-      '--skip-download', '--dump-single-json'
-    ];
-
+  '-m', 'yt_dlp',
+  '--ignore-config',
+  '--no-warnings',
+  '--no-playlist',
+  '--socket-timeout', '8',
+  '--retries', '0',
+  '--extractor-retries', '0',
+  '--skip-download',
+  '--dump-single-json'
+];
     const started = Date.now();
 
     if (process.env.DEBUG_EXTRACTOR === 'true') {
