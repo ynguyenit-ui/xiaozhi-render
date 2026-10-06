@@ -193,6 +193,7 @@ function extractUncached(target, flat = false) {
     if (process.env.DEBUG_EXTRACTOR === 'true') args.push('--verbose');
     if (/^https:\/\/(?:[^/]+\.)?youtube\.com\//i.test(target) || target.startsWith('ytsearch')) {
       args.push('--js-runtimes', process.env.YOUTUBE_JS_RUNTIME || 'node');
+      if (!flat) args.push('-S', 'abr:' + setting('YOUTUBE_SOURCE_ABR', 128, 64, 192));
     }
     if (flat) args.push('--flat-playlist');
     else args.push('-f', 'bestaudio[protocol=https]/bestaudio[protocol=http]/best[protocol=https]/best[protocol=http]');
@@ -239,7 +240,10 @@ function extractUncached(target, flat = false) {
           }));
         }
         reject(e);
-      } else resolve(data);
+      } else {
+        console.log('[EXTRACT READY]', JSON.stringify({site:/youtube|ytsearch/i.test(target)?'YouTube':'SoundCloud',stage:flat?'search':'audio',ms:Date.now()-started}));
+        resolve(data);
+      }
     }
     p.stdout.on('data', d => {
       out += d;
