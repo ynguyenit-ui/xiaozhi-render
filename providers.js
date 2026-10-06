@@ -1,4 +1,4 @@
-// Mặc định YouTube -> SoundCloud -> Audius / Internet Archive.
+// NhạcCủaTui MP3 trực tiếp; giữ các nguồn dự phòng.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -41,6 +41,60 @@ export function rank(candidates,song,artist='') {
     if(t.duration && (t.duration<60 || t.duration>900))score-=50;
     return {...t,score:Math.round(score),overlap,artistMatch};
   }).filter(t=>t.overlap>=0.75 && t.artistMatch && t.score>=90).sort((a,b)=>b.score-a.score);
+}
+// API đang được website NCT sử dụng; không cần key, chỉ chọn nguồn công khai.
+const nctSearchCache=new Map(), nctPending=new Map();
+function nctURL(value){
+  try{const u=new URL(value);return u.protocol==='https:' && !u.username && !u.password && !u.port && (u.hostname==='nct.vn' || u.hostname.endsWith('.nct.vn'));}catch{return false;}
+}
+function nctExpiry(url){
+  const expiry=Number(new URL(url).searchParams.get('e'));
+  return expiry>0?expiry*1000-60000:Date.now()+120000;
+}
+function nctTrack(row){
+  const streams=(row.streamURL || []).filter(x=>x.onlyVIP===false && Number(x.status)===1 && nctURL(x.stream));
+  const source=streams.find(x=>String(x.type)==='128') || streams.find(x=>String(x.type)==='320');
+  if(Number(row.statusPlay)!==1 || !source || !/^[A-Za-z0-9_-]{1,100}$/.test(row.key || ''))return null;
+  return {id:row.key,provider:'nct',site:'NhạcCủaTui',title:row.name,artist:row.artistName || '',duration:Number(row.duration)||0,
+    source_page:'https://www.nhaccuatui.com/song/'+row.key,nct_source:source.stream,nct_expires:nctExpiry(source.stream)};
+}
+async function nctRequest(route,body){
+  const response=await fetch('https://graph.nhaccuatui.com/api/v1/'+route,{
+    method:body?'POST':'GET',headers:{Accept:'application/json','Content-Type':'application/json',Referer:'https://www.nhaccuatui.com/'},
+    ...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(setting('NCT_SEARCH_TIMEOUT_MS',15000,1000,20000))
+  });
+  if(!response.ok)throw Error('NCT HTTP '+response.status);
+  const data=await response.json();if(Number(data.code)!==0)throw Error('NCT API unavailable');return data.data;
+}
+export async function searchNCT(song,artist=''){
+  const key=normalize(song)+'|'+normalize(artist),cached=nctSearchCache.get(key);
+  if(cached && cached.expires>Date.now())return cached.tracks;
+  if(nctPending.has(key))return nctPending.get(key);
+  const task=(async()=>{
+    const keyword=[song,artist].filter(Boolean).join(' '),query=new URLSearchParams({keyword,pageindex:'1',pagesize:'5',correct:'false'});
+    const data=await nctRequest('search/song?'+query,{keyword,pageindex:1,pagesize:5});
+    const tracks=rank((data?.songs || []).map(nctTrack).filter(Boolean),song,artist);
+    if(nctSearchCache.size>=100)nctSearchCache.delete(nctSearchCache.keys().next().value);
+    nctSearchCache.set(key,{tracks,expires:Math.min(Date.now()+(tracks.length?180000:10000),...tracks.map(t=>t.nct_expires))});
+    console.log('[NCT SEARCH]',JSON.stringify({song,matched:tracks.length}));return tracks;
+  })();
+  nctPending.set(key,task);try{return await task;}finally{nctPending.delete(key);}
+}
+export async function nctAudio(track){
+  let selected=track;
+  if(!nctURL(track.nct_source) || !(track.nct_expires>Date.now())){
+    if(!/^[A-Za-z0-9_-]{1,100}$/.test(track.id || ''))throw Error('Invalid NCT id');
+    const data=await nctRequest('song/detail/'+encodeURIComponent(track.id));
+    selected=nctTrack(data?.song || data);
+    if(!selected)throw Error('NCT track has no public MP3');
+  }
+  return {url:selected.nct_source,headers:{Referer:'https://www.nhaccuatui.com/'}};
+}
+function musicOrder(preferred,skipNCT=false){
+  const defaults=process.env.DEFAULT_MUSIC_SOURCE || 'nhaccuatui';
+  const first=preferred==='youtube'?'YouTube':defaults==='soundcloud'?'SoundCloud':defaults==='youtube'?'YouTube':'NhạcCủaTui';
+  return [first,...['NhạcCủaTui','YouTube','SoundCloud','Audius / Internet Archive'].filter(x=>x!==first)]
+    .filter(x=>x!=='NhạcCủaTui' || (!skipNCT && process.env.ENABLE_NCT!=='false'));
 }
 async function getJSON(url) {
   const r=await fetch(url,{headers:{Accept:'application/json'},signal:AbortSignal.timeout(10000)});
@@ -377,7 +431,7 @@ const blockedUntil = new Map();
 
 export async function resolveWeb(song, artist = '', options = {}) {
   const request = parseMusicRequest(song, artist, options.preferred || options.source || '');
-  const key = normalize(request.song) + '|' + normalize(request.artist) + '|' + request.preferred;
+  const key = normalize(request.song) + '|' + normalize(request.artist) + '|' + request.preferred + '|' + !!options.skipNCT;
   const cached = resolvedCache.get(key);
   if (cached && cached.expires > Date.now()) {
     console.log('[SEARCH CACHE]', request.song, cached.track.site);
@@ -385,7 +439,7 @@ export async function resolveWeb(song, artist = '', options = {}) {
   }
   resolvedCache.delete(key);
   if (resolvedPending.has(key)) return resolvedPending.get(key);
-  const task = resolveFresh(request).then(track => {
+  const task = resolveFresh({...request,skipNCT:!!options.skipNCT}).then(track => {
     if (track) {
       if (resolvedCache.size >= 100) resolvedCache.delete(resolvedCache.keys().next().value);
       resolvedCache.set(key, { track, expires: Date.now() + 1800000 });
@@ -397,17 +451,16 @@ export async function resolveWeb(song, artist = '', options = {}) {
   finally { resolvedPending.delete(key); }
 }
 
-async function resolveFresh({ song, artist, preferred }) {
+async function resolveFresh({ song, artist, preferred, skipNCT }) {
   const started = Date.now(), errors = [];
   if (!song) return null;
   const enabledSC = process.env.ENABLE_SOUNDCLOUD !== 'false';
   const enabledYT = process.env.ENABLE_YOUTUBE === 'true';
   const youtubeFirst = preferred === 'youtube' || process.env.DEFAULT_MUSIC_SOURCE !== 'soundcloud';
-  const order = youtubeFirst
-    ? ['YouTube', 'SoundCloud', 'Audius / Internet Archive']
-    : ['SoundCloud', 'YouTube', 'Audius / Internet Archive'];
+  const order = musicOrder(preferred,skipNCT);
   const searches = new Map();
   const functions = {
+    'NhạcCủaTui': () => searchNCT(song,artist),
     SoundCloud: () => searchSoundCloud(song, artist),
     YouTube: () => searchYouTubeAPI(song, artist),
     'Audius / Internet Archive': async () => {
@@ -452,6 +505,7 @@ async function resolveFresh({ song, artist, preferred }) {
     for (const t of candidates.slice(0, setting('SOURCE_CANDIDATES', 2, 1, 3))) {
       if ((failedAudio.get(t.source_page) || 0) > Date.now()) continue;
       try {
+        if(t.provider==='nct')return {...t,from_cache:false};
         await probe(await webAudio(t.source_page));
         console.log('[SEARCH DONE]', JSON.stringify({ song, site: t.site, ms: Date.now() - started }));
         return { ...t, id: Buffer.from(t.source_page).toString('base64url'), from_cache: false };
@@ -479,8 +533,9 @@ async function resolveFresh({ song, artist, preferred }) {
 export async function searchMusicMetadata(song, artist='', options={}) {
   const request=parseMusicRequest(song,artist,options.preferred || options.source || '');
   const youtubeFirst=request.preferred==='youtube' || process.env.DEFAULT_MUSIC_SOURCE!=='soundcloud';
-  const order=youtubeFirst?['YouTube','SoundCloud','Audius / Internet Archive']:['SoundCloud','YouTube','Audius / Internet Archive'];
+  const order=musicOrder(request.preferred);
   const functions={
+    'NhạcCủaTui':()=>searchNCT(request.song,request.artist),
     YouTube:()=>searchYouTubeAPI(request.song,request.artist),
     SoundCloud:()=>searchSoundCloud(request.song,request.artist),
     'Audius / Internet Archive':async()=>{
@@ -504,7 +559,7 @@ export async function searchMusicMetadata(song, artist='', options={}) {
     const first=outcome.candidates[0];
     if(first){
       console.log('[METADATA FOUND]',JSON.stringify({song:request.song,site,title:first.title}));
-      return {...first,id:Buffer.from(first.source_page).toString('base64url')};
+      return {...first,id:first.provider==='nct'?first.id:Buffer.from(first.source_page).toString('base64url')};
     }
   }
   return null;
