@@ -188,6 +188,17 @@ function extractUncached(target, flat = false) {
       '--extractor-retries', '0',
       '--skip-download', '--dump-single-json'
     ];
+    if (flat && target.startsWith('scsearch') && process.env.SC_SKIP_THUMBNAILS !== 'false') {
+      // SoundCloud flat search vẫn kiểm tra ảnh bằng HEAD; host không dùng thumbnail.
+      // Chỉ thay cách chạy tiến trình này, không sửa package yt-dlp trên đĩa.
+      const script = [
+        'from yt_dlp import main',
+        'from yt_dlp.extractor.soundcloud import SoundcloudBaseIE',
+        'SoundcloudBaseIE._extract_thumbnails = lambda self, info: []',
+        'main()'
+      ].join('\n');
+      args.splice(0, 2, '-c', script);
+    }
     if (cookieJar) args.push('--cookies', cookieJar.file);
     const started = Date.now();
     if (process.env.DEBUG_EXTRACTOR === 'true') args.push('--verbose');
