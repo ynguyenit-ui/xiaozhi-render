@@ -1,4 +1,4 @@
-// Chuẩn bị audio hoàn chỉnh trên đĩa trước khi gửi cho robot.
+// Cache hoàn chỉnh cho nguồn cũ; NCT có thể phát trong khi ghi cache.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,12 +15,12 @@ export function createAudioCache(sourceFor, rate) {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const ttl = number('AUDIO_CACHE_TTL_SECONDS', 21600, 60, 86400) * 1000;
   const budget = number('AUDIO_CACHE_MAX_MB', 128, 64, 1024) * 1024 * 1024;
-  const pending = new Map(), entries = new Map();
+  const pending = new Map(), entries = new Map(), growing = new Map();
   let jobs = 0;
   for (const name of fs.readdirSync(directory)) {
     if (!/^[a-f0-9]{64}\.(mp3|pcm)$/.test(name)) continue;
     const file = path.join(directory, name), stat = fs.statSync(file);
-    entries.set(name, { file, size: stat.size, expires: stat.mtimeMs + ttl, used: stat.mtimeMs, readers: 0 });
+    entries.set(name, { file, size: stat.size, expires: stat.mtimeMs + ttl, used: stat.mtimeMs, readers: 0, done:true });
   }
   function prune(protectedKey) {
     let bytes = [...entries.values()].reduce((n, e) => n + e.size, 0);
@@ -104,18 +104,19 @@ export function createAudioCache(sourceFor, rate) {
       }
     } finally {local.abort();}
   }
-  async function build(track, format, key) {
+  async function build(track, format, key, state) {
     if (jobs >= number('MAX_PREPARES', 2, 1, 4)) throw Error('Audio preparation busy; retry shortly');
     jobs++;
     const started = Date.now(), controller = new AbortController();
     const file = path.join(directory, key), temporary = file + '.' + randomUUID() + '.part';
+    if(state)state.file=temporary;
     let child, input, stderr = '';
     const timeout = setTimeout(() => { controller.abort(); input?.destroy(Error('Audio preparation timeout')); child?.kill('SIGKILL'); }, number('AUDIO_PREPARE_TIMEOUT_MS', 180000, 10000, 300000));
     try {
       const source = await sourceFor(track);
       if (controller.signal.aborted) throw Error('Audio preparation timeout');
-      const args = ['-hide_banner','-loglevel','error','-nostdin','-i',source.file || 'pipe:0','-t','900','-vn','-ac','1','-ar',String(rate)];
-      args.push(...(format === 'pcm' ? ['-c:a','pcm_s16le','-f','s16le'] : ['-c:a','libmp3lame','-b:a','64k','-f','mp3']), 'pipe:1');
+      const args = ['-hide_banner','-loglevel','error','-nostdin',...(track.provider==='nct'?['-probesize','32768','-analyzeduration','0']:[]),'-i',source.file || 'pipe:0','-t','900','-vn','-ac','1','-ar',String(rate)];
+      args.push(...(format === 'pcm' ? ['-c:a','pcm_s16le','-f','s16le'] : ['-c:a','libmp3lame','-b:a','64k','-write_xing','0','-id3v2_version','0','-write_id3v1','0','-f','mp3']), 'pipe:1');
       child = spawn(process.env.FFMPEG_PATH || 'ffmpeg', args, { stdio: ['pipe','pipe','pipe'] });
       child.stderr.on('data', d => { stderr = (stderr+d).slice(-1000); });
       child.stdin.on('error', () => {});
@@ -141,10 +142,12 @@ export function createAudioCache(sourceFor, rate) {
       }
       if (!bytes || controller.signal.aborted) throw Error('Audio preparation failed or timed out');
       fs.renameSync(temporary,file);
-      const entry = { file, size:bytes, expires:Date.now()+ttl, used:Date.now(), readers:0 };
+      const entry = Object.assign(state || {},{ file, size:bytes, expires:Date.now()+ttl, used:Date.now(), readers:state?.readers || 0, done:true });
       entries.set(key,entry); prune(key);
       console.log('[AUDIO READY]',JSON.stringify({title:track.title,format,bytes,ms:Date.now()-started}));
       return entry;
+    } catch(error){
+      if(state){state.error=error;state.done=true;}throw error;
     } finally {
       clearTimeout(timeout); controller.abort(); input?.destroy(); child?.kill('SIGKILL');
       fs.rmSync(temporary,{force:true}); jobs--;
@@ -158,8 +161,60 @@ export function createAudioCache(sourceFor, rate) {
     if (pending.has(key)) return pending.get(key);
     if (cached?.readers) {cached.used=Date.now();return cached;}
     prune();
-    const task = build(track,format,key); pending.set(key,task);
-    try {return await task;} finally {pending.delete(key);}
+    const state=track.provider==='nct' && format==='mp3' && process.env.NCT_PROGRESSIVE!=='false'?{readers:0,done:false}:null;
+    if(state)growing.set(key,state);
+    const task = build(track,format,key,state).catch(error=>{if(state){state.error=error;state.done=true;}throw error;}); pending.set(key,task);
+    try {return await task;} finally {pending.delete(key);growing.delete(key);}
+
+  }
+  const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  async function playable(track){
+    const complete=prepare(track,'mp3');
+    complete.catch(()=>{});
+    const state=growing.get(keyFor(track,'mp3'));
+    if(!state)return complete;
+    const threshold=number('NCT_BUFFER_SECONDS',8,3,30)*8000;
+    while(!state.done){
+      if(state.file && fs.existsSync(state.file) && fs.statSync(state.file).size>=threshold){
+        console.log('[AUDIO BUFFER READY]',JSON.stringify({title:track.title,buffer_seconds:threshold/8000}));
+        return state;
+      }
+      await Promise.race([pause(100),complete.then(()=>{},()=>{})]);
+    }
+    return complete;
+  }
+  async function serveGrowing(entry,req,res,options={}){
+    if(entry.error)throw entry.error;
+    if(res.destroyed)return;
+    entry.readers++;
+    let handle;
+    try{
+      const firstPath=entry.file;
+      try{handle=await fs.promises.open(firstPath,'r');}
+      catch(error){if(error.code!=='ENOENT' || entry.file===firstPath)throw error;handle=await fs.promises.open(entry.file,'r');}
+      if(!options.append)res.writeHead(200,{'Content-Type':'audio/mpeg','Accept-Ranges':'none','Cache-Control':'no-store','X-Audio-Sample-Rate':String(rate),'X-Audio-Channels':'1'});
+      if(req.method==='HEAD'){res.end();return;}
+      let position=0;
+      const buffer=Buffer.alloc(32768);
+      while(!res.destroyed){
+        if(entry.error)throw entry.error;
+        const available=(await handle.stat()).size-position;
+        if(available>0){
+          const {bytesRead}=await handle.read(buffer,0,Math.min(buffer.length,available),position);
+          if(!bytesRead)throw Error('Cannot read buffered audio');
+          position+=bytesRead;
+          if(!res.write(Buffer.from(buffer.subarray(0,bytesRead)))){
+            await new Promise((resolve,reject)=>{
+              const clean=()=>{res.off('drain',drain);res.off('close',close);res.off('error',close);};
+              const drain=()=>{clean();resolve();};const close=()=>{clean();reject(Error('Audio client disconnected'));};
+              res.once('drain',drain);res.once('close',close);res.once('error',close);
+            });
+          }
+        }else if(entry.done){res.end();break;}
+        else await pause(100);
+      }
+      if(!res.destroyed)console.log('[AUDIO] NCT progressive complete');
+    }finally{await handle?.close();entry.readers--;}
   }
   async function serve(track,format,req,res,options={}) {
     const entry = await prepare(track,format);
@@ -195,5 +250,5 @@ export function createAudioCache(sourceFor, rate) {
       console.log('[AUDIO]',track.title,format,'complete');
     } finally {entry.readers--;}
   }
-  return { prepare, serve };
+  return { prepare, serve, playable, serveGrowing };
 }
