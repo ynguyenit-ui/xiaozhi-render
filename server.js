@@ -1,3 +1,4 @@
+import { searchPodcast, parsePodcastRequest, podcastAudio } from './podcast.js';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -40,6 +41,7 @@ function audiusURL(route) {
   return u;
 }
 async function resolveTrack(song, artist, preferred = '', options={}) {
+  if(preferred==='podcast')return searchPodcast(song);
   const local = preferred ? null : select(catalog, song, artist);
   if (local) return {...local, provider:'catalog'};
   if (process.env.ENABLE_WEB_SEARCH !== 'false') {
@@ -56,6 +58,7 @@ async function resolveTrack(song, artist, preferred = '', options={}) {
   return select((data.data || []).filter(t => t.is_streamable !== false).map(t => ({id:t.id,title:t.title,artist:t.user?.name || t.user?.handle || '',duration:t.duration || 0,provider:'audius'})), song, artist);
 }
 async function sourceFor(track) {
+  if (track.provider === 'podcast') return podcastAudio(track);
   if (track.provider === 'nct') return nctAudio(track);
   if (track.provider === 'web') return webAudio(track.source_page);
   if (track.provider === 'audius') return {url:audiusURL(`/tracks/${encodeURIComponent(track.id)}/stream`).href};
@@ -105,11 +108,11 @@ function startMusicJob(job){
   const work=(async()=>{
     // Metadata đã chọn YouTube nghĩa là nguồn trước không có kết quả phù hợp.
     const preferred=job.preferred || (job.metadata.site==='YouTube'?'youtube':'');
-    let track=job.metadata.provider==='nct'?job.metadata:await resolveTrack(job.song,job.artist,preferred);
+    let track=['nct','podcast'].includes(job.metadata.provider)?job.metadata:await resolveTrack(job.song,job.artist,preferred);
     if(!track)throw Error('No playable matching source');
     const prepareStarted=Date.now();
     let entry;
-    try{entry=track.provider==='nct'?await audioCache.playable(track):await audioCache.prepare(track,'mp3');}
+    try{entry=['nct','podcast'].includes(track.provider)?await audioCache.playable(track):await audioCache.prepare(track,'mp3');}
     catch(error){
       if(track.provider!=='nct')throw error;
       console.warn('[NCT FALLBACK]',error.message);
@@ -120,7 +123,7 @@ function startMusicJob(job){
     return {track,entry,prepare_ms:Date.now()-prepareStarted};
   })();
   job.ready=deadline(work,180000,'Music job timed out').then(result=>{
-    job.state='ready';job.track=result.track;job.entry=result.entry;job.progressive=result.track.provider==='nct' && process.env.NCT_PROGRESSIVE!=='false';job.expires=Date.now()+1800000;
+    job.state='ready';job.track=result.track;job.entry=result.entry;job.progressive=(result.track.provider==='nct' && process.env.NCT_PROGRESSIVE!=='false') || (result.track.provider==='podcast' && process.env.PODCAST_PROGRESSIVE!=='false');job.expires=Date.now()+1800000;
     console.log('[PLAY READY]',JSON.stringify({song:job.song,site:result.track.site || result.track.provider,prepare_ms:result.prepare_ms,total_ms:Date.now()-started,job:job.id}));
     return job;
   },error=>{
@@ -139,7 +142,7 @@ async function musicJob(song,artist,preferred){
   const task=(async()=>{
     const local=preferred?null:select(catalog,song,artist);
     const metadata=local?{...local,provider:'catalog'}:process.env.ENABLE_WEB_SEARCH==='false'?null:
-      await deadline(searchMusicMetadata(song,artist,{preferred}),20000,'Metadata search timed out');
+      await deadline(preferred==='podcast'?searchPodcast(song):searchMusicMetadata(song,artist,{preferred}),20000,'Metadata search timed out');
     if(!metadata)return null;
     if(musicJobs.size>=32){
       const evict=[...musicJobs.values()].find(job=>job.state!=='pending');
@@ -224,7 +227,7 @@ function audioPath(track, format='mp3') {
   const q = new URLSearchParams({provider:track.provider,id:String(track.id),format});
   return '/audio?' + q;
 }
-const page = `<!doctype html><html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Xiaozhi Music Host</title><body style="font:18px system-ui;max-width:700px;margin:40px auto;padding:20px"><h1>Xiaozhi Music Host</h1><p>Tìm theo tên bài và ca sĩ, hoặc nhập Test loa để kiểm tra host.</p><form id="f"><input id="song" placeholder="Tên bài hát" required><input id="artist" placeholder="Ca sĩ"><button>Tìm và nghe</button></form><p id="status"></p><audio id="player" controls></audio><pre id="info" style="white-space:pre-wrap"></pre><script>document.querySelector('#f').onsubmit=async e=>{e.preventDefault();const s=document.querySelector('#status');s.textContent='Đang tìm và chuẩn bị nhạc…';try{const r=await fetch('/search?'+new URLSearchParams({song:document.querySelector('#song').value,artist:document.querySelector('#artist').value}));const t=await r.json();document.querySelector('#info').textContent=JSON.stringify(t,null,2);if(!r.ok)throw Error(t.error);s.textContent=t.title+' — '+t.artist;document.querySelector('#player').src=t.audio_full_url;}catch(e){s.textContent=e.message}};</script></body></html>`;
+const page = `<!doctype html><html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Xiaozhi Music Host</title><body style="font:18px system-ui;max-width:700px;margin:40px auto;padding:20px"><h1>Xiaozhi Music Host</h1><p>Tìm theo tên bài và ca sĩ, hoặc nhập Test loa để kiểm tra host.</p><form id="f"><input id="song" placeholder="Tên bài hoặc podcast HIEU.TV" required><input id="artist" placeholder="Ca sĩ"><button>Tìm và nghe</button></form><p id="status"></p><audio id="player" controls></audio><pre id="info" style="white-space:pre-wrap"></pre><script>document.querySelector('#f').onsubmit=async e=>{e.preventDefault();const s=document.querySelector('#status');s.textContent='Đang tìm và chuẩn bị nhạc…';try{const r=await fetch('/search?'+new URLSearchParams({song:document.querySelector('#song').value,artist:document.querySelector('#artist').value}));const t=await r.json();document.querySelector('#info').textContent=JSON.stringify(t,null,2);if(!r.ok)throw Error(t.error);s.textContent=t.title+' — '+t.artist;document.querySelector('#player').src=t.audio_full_url;}catch(e){s.textContent=e.message}};</script></body></html>`;
 const server = http.createServer(async (req,res) => {
   try {
     const u = new URL(req.url,'http://localhost');
@@ -238,11 +241,14 @@ const server = http.createServer(async (req,res) => {
       return json(res,200,await searchWeb(song,artist));
     }
     if (['/stream_pcm','/search'].includes(u.pathname)) {
-      const {song, artist, preferred} = parseMusicRequest(
+      const podcastQuery=parsePodcastRequest(u.searchParams.get('song') || '',u.searchParams.get('source') || u.searchParams.get('site') || '');
+      let {song, artist, preferred} = parseMusicRequest(
         u.searchParams.get('song') || '',
         u.searchParams.get('artist') || u.searchParams.get('singer') || '',
         u.searchParams.get('source') || u.searchParams.get('site') || ''
       );
+      if(podcastQuery!==null){song=podcastQuery;artist='';preferred='podcast';}
+      if(preferred==='podcast' && (mode!=='json' || process.env.ASYNC_MUSIC_START==='false'))return json(res,400,{error:'Podcast requires RESPONSE_MODE=json and ASYNC_MUSIC_START=true'});
       if (!song || song.length > 200 || artist.length > 200) return json(res,400,{error:'Missing song or name too long'});
       console.log('[SEARCH]',JSON.stringify({song,artist,preferred,user_agent:req.headers['user-agent'],mode}));
       const searchStarted=Date.now();
