@@ -34,13 +34,13 @@ export function createAudioCache(sourceFor, rate) {
   function keyFor(track, format) {
     return createHash('sha256').update(JSON.stringify([track.provider, track.source_page || track.id, track.source_file || track.source_url || '', format, rate, 64])).digest('hex') + '.' + format;
   }
-  async function* download(source, signal) {
+  async function* download(source, signal, podcast=false) {
     const segmented = /(^|\.)googlevideo\.com$/i.test(new URL(source.url).hostname);
     const chunkSize = 1024 * 1024;
     const concurrency = number('AUDIO_DOWNLOAD_CONCURRENCY', 3, 1, 4);
     const local = new AbortController();
     const combined = AbortSignal.any([signal, local.signal]);
-    const maximum = 128 * 1024 * 1024;
+    const maximum = (podcast?512:128) * 1024 * 1024;
     let downloadFailure;
     async function request(start, end) {
       const headers = new Headers(source.headers || {});
@@ -115,7 +115,7 @@ export function createAudioCache(sourceFor, rate) {
     try {
       const source = await sourceFor(track);
       if (controller.signal.aborted) throw Error('Audio preparation timeout');
-      const args = ['-hide_banner','-loglevel','error','-nostdin',...(track.provider==='nct'?['-probesize','32768','-analyzeduration','0']:[]),'-i',source.file || 'pipe:0','-t','900','-vn','-ac','1','-ar',String(rate)];
+      const args = ['-hide_banner','-loglevel','error','-nostdin',...(['nct','podcast'].includes(track.provider)?['-probesize','32768','-analyzeduration','0']:[]),'-i',source.file || 'pipe:0','-t',track.provider==='podcast'?'7200':'900','-vn','-ac','1','-ar',String(rate)];
       args.push(...(format === 'pcm' ? ['-c:a','pcm_s16le','-f','s16le'] : ['-c:a','libmp3lame','-b:a','64k','-write_xing','0','-id3v2_version','0','-write_id3v1','0','-f','mp3']), 'pipe:1');
       child = spawn(process.env.FFMPEG_PATH || 'ffmpeg', args, { stdio: ['pipe','pipe','pipe'] });
       child.stderr.on('data', d => { stderr = (stderr+d).slice(-1000); });
@@ -125,13 +125,13 @@ export function createAudioCache(sourceFor, rate) {
         child.once('close',code => code === 0 ? resolve() : reject(Error('FFmpeg preparation failed: '+stderr)));
       });
       exited.catch(() => {});
-      input = source.file ? null : Readable.from(download(source, controller.signal));
+      input = source.file ? null : Readable.from(download(source, controller.signal,track.provider==='podcast'));
       const feed = input ? pipeline(input,child.stdin) : Promise.resolve(child.stdin.end());
       feed.catch(() => {});
       let bytes = 0;
       const limit = new Transform({ transform(chunk,encoding,callback) {
         bytes += chunk.length;
-        callback(bytes > 48 * 1024 * 1024 ? Error('Prepared audio exceeds size limit') : null, chunk);
+        callback(bytes > (track.provider==='podcast'?64:48) * 1024 * 1024 ? Error('Prepared audio exceeds size limit') : null, chunk);
       }});
       const tasks = [feed, exited, pipeline(child.stdout,limit,fs.createWriteStream(temporary,{flags:'wx',mode:0o600}))];
       try {await Promise.all(tasks);}
@@ -161,7 +161,8 @@ export function createAudioCache(sourceFor, rate) {
     if (pending.has(key)) return pending.get(key);
     if (cached?.readers) {cached.used=Date.now();return cached;}
     prune();
-    const state=track.provider==='nct' && format==='mp3' && process.env.NCT_PROGRESSIVE!=='false'?{readers:0,done:false}:null;
+    const progressive=(track.provider==='nct' && process.env.NCT_PROGRESSIVE!=='false') || (track.provider==='podcast' && process.env.PODCAST_PROGRESSIVE!=='false');
+    const state=progressive && format==='mp3'?{readers:0,done:false}:null;
     if(state)growing.set(key,state);
     const task = build(track,format,key,state).catch(error=>{if(state){state.error=error;state.done=true;}throw error;}); pending.set(key,task);
     try {return await task;} finally {pending.delete(key);growing.delete(key);}
@@ -173,7 +174,7 @@ export function createAudioCache(sourceFor, rate) {
     complete.catch(()=>{});
     const state=growing.get(keyFor(track,'mp3'));
     if(!state)return complete;
-    const threshold=number('NCT_BUFFER_SECONDS',8,3,30)*8000;
+    const threshold=number(track.provider==='podcast'?'PODCAST_BUFFER_SECONDS':'NCT_BUFFER_SECONDS',8,3,30)*8000;
     while(!state.done){
       if(state.file && fs.existsSync(state.file) && fs.statSync(state.file).size>=threshold){
         console.log('[AUDIO BUFFER READY]',JSON.stringify({title:track.title,buffer_seconds:threshold/8000}));
@@ -213,7 +214,7 @@ export function createAudioCache(sourceFor, rate) {
         }else if(entry.done){res.end();break;}
         else await pause(100);
       }
-      if(!res.destroyed)console.log('[AUDIO] NCT progressive complete');
+      if(!res.destroyed)console.log('[AUDIO] progressive complete');
     }finally{await handle?.close();entry.readers--;}
   }
   async function serve(track,format,req,res,options={}) {
