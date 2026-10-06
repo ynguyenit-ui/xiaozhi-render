@@ -5,7 +5,7 @@ import { createAudioCache } from './audio-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveWeb, webAudio, searchWeb, allowedPage, parseMusicRequest, searchMusicMetadata } from './providers.js';
+import { resolveWeb, webAudio, searchWeb, allowedPage, parseMusicRequest, searchMusicMetadata, nctAudio } from './providers.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const catalog = JSON.parse(fs.readFileSync(path.join(root, 'catalog.json'), 'utf8'));
@@ -39,11 +39,11 @@ function audiusURL(route) {
   if (process.env.AUDIUS_API_KEY) u.searchParams.set('api_key',process.env.AUDIUS_API_KEY);
   return u;
 }
-async function resolveTrack(song, artist, preferred = '') {
+async function resolveTrack(song, artist, preferred = '', options={}) {
   const local = preferred ? null : select(catalog, song, artist);
   if (local) return {...local, provider:'catalog'};
   if (process.env.ENABLE_WEB_SEARCH !== 'false') {
-    const track = await resolveWeb(song,artist,{preferred});
+    const track = await resolveWeb(song,artist,{...options,preferred});
     if(track) return track;
   }
   if (process.env.ENABLE_AUDIUS !== 'true') return null;
@@ -56,6 +56,7 @@ async function resolveTrack(song, artist, preferred = '') {
   return select((data.data || []).filter(t => t.is_streamable !== false).map(t => ({id:t.id,title:t.title,artist:t.user?.name || t.user?.handle || '',duration:t.duration || 0,provider:'audius'})), song, artist);
 }
 async function sourceFor(track) {
+  if (track.provider === 'nct') return nctAudio(track);
   if (track.provider === 'web') return webAudio(track.source_page);
   if (track.provider === 'audius') return {url:audiusURL(`/tracks/${encodeURIComponent(track.id)}/stream`).href};
   if (track.source_file) {
@@ -104,14 +105,22 @@ function startMusicJob(job){
   const work=(async()=>{
     // Metadata đã chọn YouTube nghĩa là nguồn trước không có kết quả phù hợp.
     const preferred=job.preferred || (job.metadata.site==='YouTube'?'youtube':'');
-    const track=await resolveTrack(job.song,job.artist,preferred);
+    let track=job.metadata.provider==='nct'?job.metadata:await resolveTrack(job.song,job.artist,preferred);
     if(!track)throw Error('No playable matching source');
     const prepareStarted=Date.now();
-    const entry=await audioCache.prepare(track,'mp3');
+    let entry;
+    try{entry=track.provider==='nct'?await audioCache.playable(track):await audioCache.prepare(track,'mp3');}
+    catch(error){
+      if(track.provider!=='nct')throw error;
+      console.warn('[NCT FALLBACK]',error.message);
+      track=await resolveTrack(job.song,job.artist,job.preferred,{skipNCT:true});
+      if(!track)throw Error('NCT failed and no playable fallback');
+      entry=await audioCache.prepare(track,'mp3');
+    }
     return {track,entry,prepare_ms:Date.now()-prepareStarted};
   })();
   job.ready=deadline(work,180000,'Music job timed out').then(result=>{
-    job.state='ready';job.track=result.track;job.entry=result.entry;job.expires=Date.now()+1800000;
+    job.state='ready';job.track=result.track;job.entry=result.entry;job.progressive=result.track.provider==='nct' && process.env.NCT_PROGRESSIVE!=='false';job.expires=Date.now()+1800000;
     console.log('[PLAY READY]',JSON.stringify({song:job.song,site:result.track.site || result.track.provider,prepare_ms:result.prepare_ms,total_ms:Date.now()-started,job:job.id}));
     return job;
   },error=>{
@@ -124,6 +133,7 @@ async function musicJob(song,artist,preferred){
   const key=[normalize(song),normalize(artist),preferred,process.env.DEFAULT_MUSIC_SOURCE || 'youtube'].join('|');
   cleanMusicJobs();
   const previous=musicJobs.get(musicJobKeys.get(key));
+  if(previous?.entry?.error){previous.state='failed';previous.expires=Date.now();}
   if(previous && previous.state!=='failed')return previous;
   if(metadataPending.has(key))return metadataPending.get(key);
   const task=(async()=>{
@@ -180,18 +190,20 @@ async function writeWaiting(res,buffer){
 async function streamMusicJob(job,format,req,res){
   if(format!=='mp3')return json(res,400,{error:'Music jobs support MP3 only'});
   if(job.state==='failed')return json(res,502,{error:'Music preparation failed; check host logs'});
-  if(job.state==='ready' && fs.existsSync(job.entry.file))return stream(job.track,format,req,res);
+  if(job.state==='ready' && job.entry.error){job.state='failed';job.error=job.entry.error;return json(res,502,{error:'Audio download failed; search again'});}
+  if(job.state==='ready' && !job.progressive && fs.existsSync(job.entry.file))return stream(job.track,format,req,res);
+  if(job.state==='ready' && job.entry.done && fs.existsSync(job.entry.file))return stream(job.track,format,req,res);
   if(req.method==='HEAD'){
     res.writeHead(200,{'Content-Type':'audio/mpeg','Cache-Control':'no-store','Accept-Ranges':'none'});return res.end();
   }
   if(active>=maxStreams)return json(res,429,{error:'Host busy; retry shortly'});
-  if(job.state==='ready')startMusicJob(job);
+  if(job.state==='ready' && !fs.existsSync(job.entry.file))startMusicJob(job);
   active++;const started=Date.now();
   res.once('close',()=>{if(!res.writableFinished)console.warn('[AUDIO CLIENT CLOSED]',JSON.stringify({song:job.song,elapsed_ms:Date.now()-started}));});
   try{
     const quiet=await silence();
     if(res.destroyed)return;
-    if(job.state==='ready')return await audioCache.serve(job.track,format,req,res);
+    if(job.state==='ready')return await (job.progressive?audioCache.serveGrowing(job.entry,req,res):audioCache.serve(job.track,format,req,res));
     if(job.state==='failed')return json(res,502,{error:'Music preparation failed; check host logs'});
     res.writeHead(200,{'Content-Type':'audio/mpeg','Cache-Control':'no-store','Accept-Ranges':'none','X-Audio-Sample-Rate':String(rate),'X-Audio-Channels':'1','X-Music-Waiting':'1'});
     res.flushHeaders();
@@ -200,7 +212,7 @@ async function streamMusicJob(job,format,req,res){
     if(res.destroyed)return;
     if(job.state==='failed')throw job.error;
     console.log('[MUSIC START]',JSON.stringify({song:job.song,waiting_ms:Date.now()-started,job:job.id}));
-    await audioCache.serve(job.track,format,req,res,{append:true});
+    await (job.progressive?audioCache.serveGrowing(job.entry,req,res,{append:true}):audioCache.serve(job.track,format,req,res,{append:true}));
   }catch(error){
     console.error('[AUDIO JOB]',error.message);
     if(!res.headersSent)json(res,502,{error:'Music preparation failed; check host logs'});
@@ -283,6 +295,7 @@ const server = http.createServer(async (req,res) => {
         const page=Buffer.from(id,'base64url').toString();
         if(allowedPage(page))track={id,provider,source_page:page,title:'Web track'};
       }
+      else if(provider==='nct' && process.env.ENABLE_NCT!=='false' && /^[a-zA-Z0-9_-]{1,100}$/.test(id || '')) track={id,provider,title:'NhạcCủaTui track'};
       else if (provider === 'audius' && process.env.ENABLE_AUDIUS === 'true' && /^[a-zA-Z0-9_-]{1,100}$/.test(id || '')) track={id,provider,title:id};
       if (!track) return json(res,404,{error:'Unknown track'});
       return await stream(track,format,req,res);
