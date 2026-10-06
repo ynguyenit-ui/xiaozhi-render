@@ -201,7 +201,7 @@ function extractUncached(target, flat = false) {
     let out = '', err = '', done = false;
     const timeout = flat
       ? setting('SC_SEARCH_TIMEOUT_MS', 8000, 1000, 30000)
-      : setting('AUDIO_EXTRACT_TIMEOUT_MS', 12000, 1000, 30000);
+      : setting('AUDIO_EXTRACT_TIMEOUT_MS', 12000, 1000, 60000);
     const timer = setTimeout(() => {
       p.kill('SIGKILL');
       const e = Error('Extractor timeout'); e.code = 'SOURCE_TIMEOUT';
