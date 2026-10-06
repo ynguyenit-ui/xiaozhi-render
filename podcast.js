@@ -1,3 +1,4 @@
+import { searchPodcastRSS } from './podcast-rss.js';
 // Podcast công khai: tìm tập audio qua iTunes, dùng episodeUrl đầy đủ.
 const normalize=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[đĐ]/g,'d').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 const cache=new Map(),pending=new Map();
@@ -46,7 +47,7 @@ export async function searchPodcast(query){
     }
     const u=new URL('https://itunes.apple.com/search');
     u.search=new URLSearchParams({term:query,media:'podcast',entity:'podcastEpisode',country:'VN',limit:'30'});
-    const response=await fetch(u,{signal:AbortSignal.timeout(12000),headers:{Accept:'application/json'}});
+    const response=await fetch(u,{signal:AbortSignal.timeout(8000),headers:{Accept:'application/json'}});
     if(!response.ok)throw Error('Podcast directory HTTP '+response.status);
     const data=await response.json(),words=wanted.split(' ');
     const candidates=(data.results||[]).filter(r=>r.kind==='podcast-episode' && r.episodeContentType==='audio' && publicHTTPS(r.episodeUrl) &&
@@ -61,8 +62,11 @@ export async function searchPodcast(query){
       return {row:r,score,overlap:Math.max(overlap,metadataOverlap)};
     }).filter(x=>x.overlap>=.75).sort((a,b)=>b.score-a.score || Date.parse(b.row.releaseDate)-Date.parse(a.row.releaseDate));
     const row=candidates[0]?.row;
-    const track=row?{id:String(row.trackId),provider:'podcast',site:'Podcast',title:row.trackName,artist:row.collectionName,
+    let track=row?{id:String(row.trackId),provider:'podcast',site:'Podcast',title:row.trackName,artist:row.collectionName,
       duration:Math.round(row.trackTimeMillis/1000),source_page:row.trackViewUrl,podcast_source:row.episodeUrl}:null;
+    if(!track && process.env.PODCAST_RSS_FALLBACK!=='false'){
+      try{track=await searchPodcastRSS(query,data.results || []);}catch(error){console.warn('[PODCAST RSS FAILED]',error.message);}
+    }
     if(cache.size>=100)cache.delete(cache.keys().next().value);
     cache.set(wanted,{track,expires:Date.now()+(track?300000:15000)});
     console.log('[PODCAST SEARCH]',JSON.stringify({query,matched:candidates.length,title:track?.title}));return track;
