@@ -1,10 +1,8 @@
 import http from 'node:http';
+import { createAudioCache } from './audio-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 import { resolveWeb, webAudio, searchWeb, allowedPage, parseMusicRequest } from './providers.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -70,68 +68,29 @@ async function sourceFor(track) {
   }
   throw Error('Track has no audio source');
 }
-async function stream(track, format, req, res) {
-  if (active >= maxStreams) return json(res,429,{error:'Host busy; retry shortly'});
+const audioCache = createAudioCache(sourceFor,rate);
+async function stream(track,format,req,res) {
+  if(active >= maxStreams)return json(res,429,{error:'Host busy; retry shortly'});
   active++;
-  const controller = new AbortController();
-  let child, input, completed = false, stderr = '';
-  const stop = () => {controller.abort(); input?.destroy(); child?.kill('SIGKILL');};
-  res.once('close',stop);
-  const hardTimeout = setTimeout(stop, 15 * 60 * 1000);
-  try {
-    const source = await sourceFor(track);
-    if (source.url) {
-      const timer = setTimeout(() => controller.abort(),15000);
-      let upstream;
-      try {upstream = await fetch(source.url,{headers:source.headers || {},signal:controller.signal,redirect:'follow'});} finally {clearTimeout(timer);}
-      if (!upstream.ok || !upstream.body) {await upstream.body?.cancel(); throw Error(`Audio source HTTP ${upstream.status}`);}
-      const type = upstream.headers.get('content-type') || '';
-      if (/json|text\/html/i.test(type)) {await upstream.body.cancel(); throw Error('Source returned a page instead of audio');}
-      input = Readable.fromWeb(upstream.body);
-      input.on('error',() => {});
-    }
-    if (res.destroyed) return;
-    const args = ['-hide_banner','-loglevel','error','-nostdin','-i',source.file || 'pipe:0','-t','900','-vn','-ac','1','-ar',String(rate)];
-    args.push(...(format === 'pcm' ? ['-c:a','pcm_s16le','-f','s16le'] : ['-c:a','libmp3lame','-b:a','64k','-f','mp3']), 'pipe:1');
-    child = spawn(process.env.FFMPEG_PATH || 'ffmpeg',args,{stdio:['pipe','pipe','pipe']});
-    child.stderr.on('data', d => {stderr = (stderr + d).slice(-1000);});
-    child.stdin.on('error',() => {});
-    const exited = new Promise((resolve,reject) => {child.once('error',reject); child.once('close', code => code === 0 ? resolve() : reject(Error('FFmpeg failed: ' + stderr)));});
-    exited.catch(() => {});
-    res.setHeader('Content-Type',format === 'pcm' ? 'application/octet-stream' : 'audio/mpeg');
-    res.setHeader('Cache-Control','no-store');
-    res.setHeader('Accept-Ranges','none');
-    res.setHeader('X-Audio-Sample-Rate',String(rate));
-    res.setHeader('X-Audio-Channels','1');
-    const feeding = input ? pipeline(input,child.stdin) : Promise.resolve(child.stdin.end());
-    feeding.catch(() => {});
-    await pipeline(child.stdout,res,{end:false});
-    await exited;
-    await feeding;
-    completed = true;
-    res.end();
-  } catch (err) {
+  try { await audioCache.serve(track,format,req,res); }
+  catch(err) {
     console.error('[AUDIO]',err.message);
-    if (!res.headersSent) {res.removeHeader('Content-Type'); json(res,502,{error:'Audio source or conversion failed'});}
-    else if (!res.destroyed) res.destroy();
-  } finally {
-    clearTimeout(hardTimeout); res.off('close',stop);
-    stop(); active--;
-    console.log('[AUDIO]',track.title,format,completed ? 'complete' : 'stopped');
-  }
+    if(!res.headersSent)json(res,502,{error:'Audio preparation failed; check host logs'});
+    else if(!res.destroyed)res.destroy();
+  } finally {active--;}
 }
 function audioPath(track, format='mp3') {
   const q = new URLSearchParams({provider:track.provider,id:String(track.id),format});
   return '/audio?' + q;
 }
-const page = `<!doctype html><html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Xiaozhi Music Host</title><body style="font:18px system-ui;max-width:700px;margin:40px auto;padding:20px"><h1>Xiaozhi Music Host</h1><p>Tìm theo tên bài và ca sĩ, hoặc nhập Test loa để kiểm tra host.</p><form id="f"><input id="song" placeholder="Tên bài hát" required><input id="artist" placeholder="Ca sĩ"><button>Tìm và nghe</button></form><p id="status"></p><audio id="player" controls></audio><pre id="info" style="white-space:pre-wrap"></pre><script>document.querySelector('#f').onsubmit=async e=>{e.preventDefault();const s=document.querySelector('#status');s.textContent='Đang tìm…';try{const r=await fetch('/search?'+new URLSearchParams({song:document.querySelector('#song').value,artist:document.querySelector('#artist').value}));const t=await r.json();document.querySelector('#info').textContent=JSON.stringify(t,null,2);if(!r.ok)throw Error(t.error);s.textContent=t.title+' — '+t.artist;document.querySelector('#player').src=t.audio_full_url;}catch(e){s.textContent=e.message}};</script></body></html>`;
+const page = `<!doctype html><html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Xiaozhi Music Host</title><body style="font:18px system-ui;max-width:700px;margin:40px auto;padding:20px"><h1>Xiaozhi Music Host</h1><p>Tìm theo tên bài và ca sĩ, hoặc nhập Test loa để kiểm tra host.</p><form id="f"><input id="song" placeholder="Tên bài hát" required><input id="artist" placeholder="Ca sĩ"><button>Tìm và nghe</button></form><p id="status"></p><audio id="player" controls></audio><pre id="info" style="white-space:pre-wrap"></pre><script>document.querySelector('#f').onsubmit=async e=>{e.preventDefault();const s=document.querySelector('#status');s.textContent='Đang tìm và chuẩn bị nhạc…';try{const r=await fetch('/search?'+new URLSearchParams({song:document.querySelector('#song').value,artist:document.querySelector('#artist').value}));const t=await r.json();document.querySelector('#info').textContent=JSON.stringify(t,null,2);if(!r.ok)throw Error(t.error);s.textContent=t.title+' — '+t.artist;document.querySelector('#player').src=t.audio_full_url;}catch(e){s.textContent=e.message}};</script></body></html>`;
 const server = http.createServer(async (req,res) => {
   try {
     const u = new URL(req.url,'http://localhost');
     if (!['GET','HEAD'].includes(req.method)) return json(res,405,{error:'GET only'});
     if (u.pathname === '/health') return json(res,200,{status:'ok',active_streams:active,mode,sample_rate:rate,catalog_tracks:catalog.length});
     if (u.pathname === '/') {res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});return res.end(req.method === 'HEAD' ? '' : page);}
-    if (req.method === 'HEAD') {res.writeHead(405);return res.end();}
+    if (req.method === 'HEAD' && u.pathname !== '/audio') {res.writeHead(405);return res.end();}
     if (u.pathname === '/candidates') {
       const song=(u.searchParams.get('song') || '').trim(),artist=(u.searchParams.get('artist') || '').trim();
       if(!song || song.length>200 || artist.length>200)return json(res,400,{error:'Invalid song / artist'});
@@ -145,10 +104,15 @@ const server = http.createServer(async (req,res) => {
       );
       if (!song || song.length > 200 || artist.length > 200) return json(res,400,{error:'Missing song or name too long'});
       console.log('[SEARCH]',JSON.stringify({song,artist,preferred,user_agent:req.headers['user-agent'],mode}));
+      const searchStarted=Date.now();
       const track = await resolveTrack(song,artist,preferred);
       if (!track) return json(res,404,{error:'Không tìm thấy bài khớp. Thêm bài vào catalog.json hoặc thử tên khác.',title:song,artist});
       if (res.destroyed) return;
       if (u.pathname === '/stream_pcm' && mode !== 'json') return await stream(track,mode,req,res);
+      const readyStarted=Date.now();
+      await audioCache.prepare(track,'mp3');
+      console.log('[PLAY READY]',JSON.stringify({song,site:track.site || track.provider,prepare_ms:Date.now()-readyStarted,total_ms:Date.now()-searchStarted}));
+      if(res.destroyed)return;
       const p = audioPath(track);
       return json(res,200,{title:track.title,artist:track.artist,audio_url:p,audio_full_url:base ? base+p : p,m3u8_url:'',lyric_url:'',cover_url:'',duration:track.duration || 0,from_cache:track.provider==='catalog' || !!track.from_cache,source_page:track.source_page || '',site:track.site || track.provider,ip:''});
     }
