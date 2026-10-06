@@ -11,4 +11,5 @@ ENV PYTHON_PATH=/opt/yt/bin/python3
 ENV YOUTUBE_JS_RUNTIME=deno
 ENV DENO_DIR=/tmp/deno-cache
 EXPOSE 10000
+COPY podcast.js podcast-rss.js podcast-rss.py ./
 CMD ["node", "server.js"]
