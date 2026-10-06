@@ -1,0 +1,161 @@
+// Chuẩn bị audio hoàn chỉnh trên đĩa trước khi gửi cho robot.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+function number(name, fallback, min, max) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
+}
+export function createAudioCache(sourceFor, rate) {
+  const directory = process.env.AUDIO_CACHE_DIR || path.join(os.tmpdir(), 'xiaozhi-audio-v2');
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const ttl = number('AUDIO_CACHE_TTL_SECONDS', 21600, 60, 86400) * 1000;
+  const budget = number('AUDIO_CACHE_MAX_MB', 128, 64, 1024) * 1024 * 1024;
+  const pending = new Map(), entries = new Map();
+  let jobs = 0;
+  for (const name of fs.readdirSync(directory)) {
+    if (!/^[a-f0-9]{64}\.(mp3|pcm)$/.test(name)) continue;
+    const file = path.join(directory, name), stat = fs.statSync(file);
+    entries.set(name, { file, size: stat.size, expires: stat.mtimeMs + ttl, used: stat.mtimeMs, readers: 0 });
+  }
+  function prune(protectedKey) {
+    let bytes = [...entries.values()].reduce((n, e) => n + e.size, 0);
+    for (const [key, entry] of [...entries].sort((a,b) => a[1].used-b[1].used)) {
+      if (key === protectedKey || entry.readers) continue;
+      if (entry.expires > Date.now() && bytes <= budget) continue;
+      fs.rmSync(entry.file, { force: true }); entries.delete(key); bytes -= entry.size;
+    }
+  }
+  prune();
+  function keyFor(track, format) {
+    return createHash('sha256').update(JSON.stringify([track.provider, track.source_page || track.id, track.source_file || track.source_url || '', format, rate, 64])).digest('hex') + '.' + format;
+  }
+  async function* download(source, signal) {
+    const segmented = /(^|\.)googlevideo\.com$/i.test(new URL(source.url).hostname);
+    const chunkSize = 1024 * 1024;
+    let offset = 0, total = null;
+    do {
+      const headers = new Headers(source.headers || {});
+      headers.delete('range'); headers.set('Accept-Encoding', 'identity');
+      if (segmented) headers.set('Range', `bytes=${offset}-${offset+chunkSize-1}`);
+      const response = await fetch(source.url, { headers, redirect: 'follow', signal });
+      if (!response.ok || !response.body) {
+        await response.body?.cancel(); throw Error(`Audio download HTTP ${response.status}`);
+      }
+      if (/json|text\/html/i.test(response.headers.get('content-type') || '')) {
+        await response.body.cancel(); throw Error('Audio source returned a page');
+      }
+      const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') || '');
+      if (segmented && response.status === 206) {
+        if (!range || Number(range[1]) !== offset || Number(range[2]) < offset || Number(range[3]) <= Number(range[2])) {
+          await response.body.cancel(); throw Error('Invalid audio Content-Range');
+        }
+        if (total !== null && total !== Number(range[3])) {
+          await response.body.cancel(); throw Error('Audio source length changed');
+        }
+        total = Number(range[3]);
+      } else if (offset) {
+        await response.body.cancel(); throw Error('Audio source stopped honoring byte ranges');
+      }
+      let bytes = 0;
+      for await (const chunk of response.body) {
+        bytes += chunk.byteLength;
+        if (offset + bytes > 128 * 1024 * 1024) throw Error('Audio source exceeds size limit');
+        yield chunk;
+      }
+      if (range && segmented && bytes !== Number(range[2])-offset+1) throw Error('Audio download ended early');
+      offset += bytes;
+      if (!segmented || response.status !== 206) {
+        const length = Number(response.headers.get('content-length'));
+        if (length > 0 && bytes !== length) throw Error('Audio download ended early');
+        return;
+      }
+    } while (offset < total);
+  }
+  async function build(track, format, key) {
+    if (jobs >= number('MAX_PREPARES', 2, 1, 4)) throw Error('Audio preparation busy; retry shortly');
+    jobs++;
+    const started = Date.now(), controller = new AbortController();
+    const file = path.join(directory, key), temporary = file + '.' + randomUUID() + '.part';
+    let child, input, stderr = '';
+    const timeout = setTimeout(() => { controller.abort(); input?.destroy(Error('Audio preparation timeout')); child?.kill('SIGKILL'); }, number('AUDIO_PREPARE_TIMEOUT_MS', 180000, 10000, 300000));
+    try {
+      const source = await sourceFor(track);
+      if (controller.signal.aborted) throw Error('Audio preparation timeout');
+      const args = ['-hide_banner','-loglevel','error','-nostdin','-i',source.file || 'pipe:0','-t','900','-vn','-ac','1','-ar',String(rate)];
+      args.push(...(format === 'pcm' ? ['-c:a','pcm_s16le','-f','s16le'] : ['-c:a','libmp3lame','-b:a','64k','-f','mp3']), 'pipe:1');
+      child = spawn(process.env.FFMPEG_PATH || 'ffmpeg', args, { stdio: ['pipe','pipe','pipe'] });
+      child.stderr.on('data', d => { stderr = (stderr+d).slice(-1000); });
+      child.stdin.on('error', () => {});
+      const exited = new Promise((resolve,reject) => {
+        child.once('error',reject);
+        child.once('close',code => code === 0 ? resolve() : reject(Error('FFmpeg preparation failed: '+stderr)));
+      });
+      exited.catch(() => {});
+      input = source.file ? null : Readable.from(download(source, controller.signal));
+      const feed = input ? pipeline(input,child.stdin) : Promise.resolve(child.stdin.end());
+      feed.catch(() => {});
+      let bytes = 0;
+      const limit = new Transform({ transform(chunk,encoding,callback) {
+        bytes += chunk.length;
+        callback(bytes > 48 * 1024 * 1024 ? Error('Prepared audio exceeds size limit') : null, chunk);
+      }});
+      const tasks = [feed, exited, pipeline(child.stdout,limit,fs.createWriteStream(temporary,{flags:'wx',mode:0o600}))];
+      try {await Promise.all(tasks);}
+      catch(error) {
+        controller.abort(); input?.destroy(); child.kill('SIGKILL');
+        await Promise.allSettled(tasks);
+        throw error;
+      }
+      if (!bytes || controller.signal.aborted) throw Error('Audio preparation failed or timed out');
+      fs.renameSync(temporary,file);
+      const entry = { file, size:bytes, expires:Date.now()+ttl, used:Date.now(), readers:0 };
+      entries.set(key,entry); prune(key);
+      console.log('[AUDIO READY]',JSON.stringify({title:track.title,format,bytes,ms:Date.now()-started}));
+      return entry;
+    } finally {
+      clearTimeout(timeout); controller.abort(); input?.destroy(); child?.kill('SIGKILL');
+      fs.rmSync(temporary,{force:true}); jobs--;
+    }
+  }
+  async function prepare(track, format='mp3') {
+    const key = keyFor(track,format), cached = entries.get(key);
+    if (cached && cached.expires > Date.now() && fs.existsSync(cached.file)) {
+      cached.used=Date.now(); console.log('[AUDIO FILE CACHE]',track.title); return cached;
+    }
+    if (pending.has(key)) return pending.get(key);
+    if (cached?.readers) {cached.used=Date.now();return cached;}
+    prune();
+    const task = build(track,format,key); pending.set(key,task);
+    try {return await task;} finally {pending.delete(key);}
+  }
+  async function serve(track,format,req,res) {
+    const entry = await prepare(track,format);
+    if (res.destroyed) return;
+    entry.readers++; entry.used=Date.now();
+    try {
+      let start=0, end=entry.size-1, status=200;
+      if (req.headers.range) {
+        const match=/^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
+        if (!match || (!match[1] && !match[2])) {res.writeHead(416,{'Content-Range':`bytes */${entry.size}`});res.end();return;}
+        if (!match[1]) {const suffix=Number(match[2]);start=Math.max(0,entry.size-suffix);}
+        else {start=Number(match[1]);if(match[2])end=Math.min(end,Number(match[2]));}
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= entry.size) {
+          res.writeHead(416,{'Content-Range':`bytes */${entry.size}`});res.end();return;
+        }
+        status=206;
+      }
+      const headers={'Content-Type':format==='pcm'?'application/octet-stream':'audio/mpeg','Content-Length':end-start+1,'Accept-Ranges':'bytes','Cache-Control':'private, max-age=300','X-Audio-Sample-Rate':String(rate),'X-Audio-Channels':'1'};
+      if(status===206)headers['Content-Range']=`bytes ${start}-${end}/${entry.size}`;
+      res.writeHead(status,headers);
+      if(req.method==='HEAD'){res.end();return;}
+      await pipeline(fs.createReadStream(entry.file,{start,end}),res);
+      console.log('[AUDIO]',track.title,format,'complete');
+    } finally {entry.readers--;}
+  }
+  return { prepare, serve };
+}
