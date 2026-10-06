@@ -161,13 +161,13 @@ export function createAudioCache(sourceFor, rate) {
     const task = build(track,format,key); pending.set(key,task);
     try {return await task;} finally {pending.delete(key);}
   }
-  async function serve(track,format,req,res) {
+  async function serve(track,format,req,res,options={}) {
     const entry = await prepare(track,format);
     if (res.destroyed) return;
     entry.readers++; entry.used=Date.now();
     try {
       let start=0, end=entry.size-1, status=200;
-      if (req.headers.range) {
+      if (req.headers.range && !options.append) {
         const match=/^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
         if (!match || (!match[1] && !match[2])) {res.writeHead(416,{'Content-Range':`bytes */${entry.size}`});res.end();return;}
         if (!match[1]) {const suffix=Number(match[2]);start=Math.max(0,entry.size-suffix);}
@@ -179,7 +179,17 @@ export function createAudioCache(sourceFor, rate) {
       }
       const headers={'Content-Type':format==='pcm'?'application/octet-stream':'audio/mpeg','Content-Length':end-start+1,'Accept-Ranges':'bytes','Cache-Control':'private, max-age=300','X-Audio-Sample-Rate':String(rate),'X-Audio-Channels':'1'};
       if(status===206)headers['Content-Range']=`bytes ${start}-${end}/${entry.size}`;
-      res.writeHead(status,headers);
+      if(options.append && format==='mp3') {
+        // Bỏ ID3 ở giữa luồng sau các frame im lặng; giữ nguyên frame nhạc.
+        const descriptor=fs.openSync(entry.file,'r'),tag=Buffer.alloc(10);
+        try{fs.readSync(descriptor,tag,0,10,0);}finally{fs.closeSync(descriptor);}
+        if(tag.subarray(0,3).toString()==='ID3') {
+          start=10+((tag[6]&127)*2097152+(tag[7]&127)*16384+(tag[8]&127)*128+(tag[9]&127));
+          if(tag[5]&16)start+=10;
+          if(start>end)throw Error('MP3 has no audio frames');
+        }
+      }
+      if(!options.append)res.writeHead(status,headers);
       if(req.method==='HEAD'){res.end();return;}
       await pipeline(fs.createReadStream(entry.file,{start,end}),res);
       console.log('[AUDIO]',track.title,format,'complete');
