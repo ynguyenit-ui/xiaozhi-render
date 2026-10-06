@@ -193,6 +193,7 @@ export function createAudioCache(sourceFor, rate) {
       const firstPath=entry.file;
       try{handle=await fs.promises.open(firstPath,'r');}
       catch(error){if(error.code!=='ENOENT' || entry.file===firstPath)throw error;handle=await fs.promises.open(entry.file,'r');}
+      if(res.destroyed)return;
       if(!options.append)res.writeHead(200,{'Content-Type':'audio/mpeg','Accept-Ranges':'none','Cache-Control':'no-store','X-Audio-Sample-Rate':String(rate),'X-Audio-Channels':'1'});
       if(req.method==='HEAD'){res.end();return;}
       let position=0;
@@ -204,7 +205,9 @@ export function createAudioCache(sourceFor, rate) {
           const {bytesRead}=await handle.read(buffer,0,Math.min(buffer.length,available),position);
           if(!bytesRead)throw Error('Cannot read buffered audio');
           position+=bytesRead;
+          if(res.destroyed)return;
           if(!res.write(Buffer.from(buffer.subarray(0,bytesRead)))){
+            if(res.destroyed)throw Error('Audio client disconnected');
             await new Promise((resolve,reject)=>{
               const clean=()=>{res.off('drain',drain);res.off('close',close);res.off('error',close);};
               const drain=()=>{clean();resolve();};const close=()=>{clean();reject(Error('Audio client disconnected'));};
@@ -215,7 +218,7 @@ export function createAudioCache(sourceFor, rate) {
         else await pause(100);
       }
       if(!res.destroyed)console.log('[AUDIO] progressive complete');
-    }finally{await handle?.close();entry.readers--;}
+    }finally{try{await handle?.close();}finally{entry.readers--;}}
   }
   async function serve(track,format,req,res,options={}) {
     const entry = await prepare(track,format);
