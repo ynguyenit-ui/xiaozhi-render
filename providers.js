@@ -128,23 +128,50 @@ function prepareYouTubeCookies(target) {
   const configured = process.env.YOUTUBE_COOKIES_FILE;
   const youtube = /^https:\/\/(?:[^/]+\.)?youtube\.com\//i.test(target) || target.startsWith('ytsearch');
   if (!configured || !youtube) return null;
+  function failure(code, message) {
+    const e = Error(message); e.code = code; return e;
+  }
+  let data;
+  try {
+    data = fs.readFileSync(configured, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT' || e.code === 'ENOTDIR') {
+      throw failure('SOURCE_COOKIE_MISSING', 'YouTube Secret File not found; check filename and YOUTUBE_COOKIES_FILE');
+    }
+    if (e.code === 'EACCES' || e.code === 'EPERM') {
+      throw failure('SOURCE_COOKIE_PERMISSION', 'Host user cannot read YouTube Secret File');
+    }
+    throw failure('SOURCE_COOKIE_READ', 'Cannot read YouTube Secret File');
+  }
+  data = data.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trimStart();
+  const lines = data.split('\n');
+  if (!/^# (?:Netscape HTTP Cookie File|HTTP Cookie File)$/.test(lines[0].trim())) {
+    throw failure('SOURCE_COOKIE_FORMAT', 'Cookie file must be Netscape text, not JSON or a Cookie header');
+  }
+  const rows = lines.filter(line => line.trim() && (!line.startsWith('#') || line.startsWith('#HttpOnly_')))
+    .map(line => line.split('\t'));
+  if (!rows.length || rows.some(row => row.length < 7 || !row[0] || !row[5] || !Number.isFinite(Number(row[4])))) {
+    throw failure('SOURCE_COOKIE_ROWS', 'Cookie file needs complete tab-separated Netscape rows; export again');
+  }
+  const youtubeRows = rows.filter(row => {
+    const domain = row[0].replace(/^#HttpOnly_/, '').replace(/^\./, '').toLowerCase();
+    return domain === 'youtube.com' || domain.endsWith('.youtube.com');
+  });
+  if (!youtubeRows.length) {
+    throw failure('SOURCE_COOKIE_SCOPE', 'Cookie file has no youtube.com cookies');
+  }
   let directory;
   try {
-    const data = fs.readFileSync(configured, 'utf8');
-    const header = data.replace(/^\uFEFF/, '').split(/\r?\n/)[0].trim();
-    if (!/^# (?:Netscape HTTP Cookie File|HTTP Cookie File)$/.test(header)) {
-      throw Error('Invalid cookie format');
-    }
-    // yt-dlp may update the jar; Render Secret Files must stay unchanged.
     directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaozhi-yt-'));
     const file = path.join(directory, 'cookies.txt');
-    fs.writeFileSync(file, data.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n'), { mode: 0o600 });
+    fs.writeFileSync(file, data, { mode: 0o600 });
+    if (process.env.DEBUG_EXTRACTOR === 'true') {
+      console.log('[YOUTUBE AUTH]', JSON.stringify({ loaded: true, youtube_rows: youtubeRows.length }));
+    }
     return { file, cleanup: () => fs.rmSync(directory, { recursive: true, force: true }) };
   } catch {
-    if (directory) fs.rmSync(directory, { recursive: true, force: true });
-    const e = Error('YouTube cookie file unreadable or not Netscape format');
-    e.code = 'SOURCE_COOKIE_CONFIG';
-    throw e;
+    if (directory) { try { fs.rmSync(directory, { recursive: true, force: true }); } catch {} }
+    throw failure('SOURCE_COOKIE_TEMP', 'Cannot create private temporary YouTube cookie jar');
   }
 }
 
@@ -405,14 +432,16 @@ async function resolveFresh({ song, artist, preferred }) {
         return { ...t, id: Buffer.from(t.source_page).toString('base64url'), from_cache: false };
       } catch (e) {
         if (failedAudio.size >= 100) failedAudio.delete(failedAudio.keys().next().value);
-        if (!/busy/i.test(e.message)) failedAudio.set(t.source_page, Date.now() + 30000);
+        if (!/busy/i.test(e.message) && !String(e.code || '').startsWith('SOURCE_COOKIE_')) {
+          failedAudio.set(t.source_page, Date.now() + 30000);
+        }
         errors.push({ site: t.site || site, error: e.message });
         console.warn('[SOURCE ERROR]', site, e.code || 'AUDIO_FAILED', e.message);
         if (e.code === 'SOURCE_BLOCKED') {
           blockedUntil.set(site, Date.now() + 120000);
           break;
         }
-        if (e.code === 'SOURCE_FORBIDDEN' || e.code === 'SOURCE_RUNTIME') break;
+        if (e.code === 'SOURCE_FORBIDDEN' || e.code === 'SOURCE_RUNTIME' || String(e.code || '').startsWith('SOURCE_COOKIE_')) break;
       }
     }
     console.log('[SEARCH SOURCE DONE]', site, Date.now() - sourceStarted, 'ms');
