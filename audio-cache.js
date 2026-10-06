@@ -37,44 +37,72 @@ export function createAudioCache(sourceFor, rate) {
   async function* download(source, signal) {
     const segmented = /(^|\.)googlevideo\.com$/i.test(new URL(source.url).hostname);
     const chunkSize = 1024 * 1024;
-    let offset = 0, total = null;
-    do {
+    const concurrency = number('AUDIO_DOWNLOAD_CONCURRENCY', 3, 1, 4);
+    const local = new AbortController();
+    const combined = AbortSignal.any([signal, local.signal]);
+    const maximum = 128 * 1024 * 1024;
+    let downloadFailure;
+    async function request(start, end) {
       const headers = new Headers(source.headers || {});
       headers.delete('range'); headers.set('Accept-Encoding', 'identity');
-      if (segmented) headers.set('Range', `bytes=${offset}-${offset+chunkSize-1}`);
-      const response = await fetch(source.url, { headers, redirect: 'follow', signal });
-      if (!response.ok || !response.body) {
-        await response.body?.cancel(); throw Error(`Audio download HTTP ${response.status}`);
+      if(segmented)headers.set('Range', `bytes=${start}-${end}`);
+      const response = await fetch(source.url, {headers,redirect:'follow',signal:combined});
+      if(!response.ok || !response.body) {
+        await response.body?.cancel();throw Error(`Audio download HTTP ${response.status}`);
       }
-      if (/json|text\/html/i.test(response.headers.get('content-type') || '')) {
-        await response.body.cancel(); throw Error('Audio source returned a page');
+      if(/json|text\/html/i.test(response.headers.get('content-type') || '')) {
+        await response.body.cancel();throw Error('Audio source returned a page');
       }
-      const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') || '');
-      if (segmented && response.status === 206) {
-        if (!range || Number(range[1]) !== offset || Number(range[2]) < offset || Number(range[3]) <= Number(range[2])) {
-          await response.body.cancel(); throw Error('Invalid audio Content-Range');
+      return response;
+    }
+    async function readRange(response,start,end,total=null) {
+      const range=/^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') || '');
+      if(!range || Number(range[1])!==start || Number(range[3])>maximum ||
+        Number(range[2])!==Math.min(end,Number(range[3])-1) ||
+        (total!==null && total!==Number(range[3]))) {
+        await response.body.cancel();throw Error('Invalid audio Content-Range');
+      }
+      const expected=Number(range[2])-start+1, parts=[];
+      let received=0;
+      for await(const part of response.body) {
+        received+=part.byteLength;
+        if(received>expected)throw Error('Audio range exceeds expected length');
+        parts.push(Buffer.from(part));
+      }
+      if(received!==expected)throw Error('Audio download ended early');
+      return {data:Buffer.concat(parts,received),total:Number(range[3])};
+    }
+    try {
+      const first=await request(0,chunkSize-1);
+      if(!segmented || first.status!==206) {
+        const expected=Number(first.headers.get('content-length'));let received=0;
+        for await(const part of first.body) {
+          received+=part.byteLength;
+          if(received>maximum)throw Error('Audio source exceeds size limit');
+          yield part;
         }
-        if (total !== null && total !== Number(range[3])) {
-          await response.body.cancel(); throw Error('Audio source length changed');
-        }
-        total = Number(range[3]);
-      } else if (offset) {
-        await response.body.cancel(); throw Error('Audio source stopped honoring byte ranges');
-      }
-      let bytes = 0;
-      for await (const chunk of response.body) {
-        bytes += chunk.byteLength;
-        if (offset + bytes > 128 * 1024 * 1024) throw Error('Audio source exceeds size limit');
-        yield chunk;
-      }
-      if (range && segmented && bytes !== Number(range[2])-offset+1) throw Error('Audio download ended early');
-      offset += bytes;
-      if (!segmented || response.status !== 206) {
-        const length = Number(response.headers.get('content-length'));
-        if (length > 0 && bytes !== length) throw Error('Audio download ended early');
+        if(expected>0 && received!==expected)throw Error('Audio download ended early');
         return;
       }
-    } while (offset < total);
+      const firstChunk=await readRange(first,0,chunkSize-1);
+      yield firstChunk.data;
+      const total=firstChunk.total;
+      for(let offset=firstChunk.data.length;offset<total;offset+=chunkSize*concurrency) {
+        const tasks=[];
+        for(let i=0;i<concurrency && offset+i*chunkSize<total;i++) {
+          const start=offset+i*chunkSize,end=Math.min(start+chunkSize-1,total-1);
+          tasks.push((async()=>{
+            const response=await request(start,end);
+            if(response.status!==206){await response.body.cancel();throw Error('Audio source stopped honoring byte ranges');}
+            return readRange(response,start,end,total);
+          })().then(value=>({value}),error=>{downloadFailure ||= error;local.abort();return {error};}));
+        }
+        const results=await Promise.all(tasks);
+        const failure=results.find(result=>result.error);
+        if(failure)throw downloadFailure || failure.error;
+        for(const result of results)yield result.value.data;
+      }
+    } finally {local.abort();}
   }
   async function build(track, format, key) {
     if (jobs >= number('MAX_PREPARES', 2, 1, 4)) throw Error('Audio preparation busy; retry shortly');
