@@ -72,6 +72,10 @@ const audioCache = createAudioCache(sourceFor,rate);
 async function stream(track,format,req,res) {
   if(active >= maxStreams)return json(res,429,{error:'Host busy; retry shortly'});
   active++;
+  const audioStarted=Date.now();
+  res.once('close',()=>{
+    if(!res.writableFinished)console.warn('[AUDIO CLIENT CLOSED]',JSON.stringify({title:track.title,elapsed_ms:Date.now()-audioStarted}));
+  });
   try { await audioCache.serve(track,format,req,res); }
   catch(err) {
     console.error('[AUDIO]',err.message);
@@ -105,14 +109,28 @@ const server = http.createServer(async (req,res) => {
       if (!song || song.length > 200 || artist.length > 200) return json(res,400,{error:'Missing song or name too long'});
       console.log('[SEARCH]',JSON.stringify({song,artist,preferred,user_agent:req.headers['user-agent'],mode}));
       const searchStarted=Date.now();
+      let phase='search';
+      res.once('close',()=>{
+        if(!res.writableFinished)console.warn('[CLIENT CLOSED]',JSON.stringify({song,phase,elapsed_ms:Date.now()-searchStarted,user_agent:req.headers['user-agent']}));
+      });
       const track = await resolveTrack(song,artist,preferred);
       if (!track) return json(res,404,{error:'Không tìm thấy bài khớp. Thêm bài vào catalog.json hoặc thử tên khác.',title:song,artist});
-      if (res.destroyed) return;
-      if (u.pathname === '/stream_pcm' && mode !== 'json') return await stream(track,mode,req,res);
+      if (u.pathname === '/stream_pcm' && mode !== 'json') {
+        if(res.destroyed)return;
+        return await stream(track,mode,req,res);
+      }
+      // Chuẩn bị một lần ở nền; /audio dùng cùng công việc đang chạy.
+      phase='prepare';
       const readyStarted=Date.now();
-      await audioCache.prepare(track,'mp3');
-      console.log('[PLAY READY]',JSON.stringify({song,site:track.site || track.provider,prepare_ms:Date.now()-readyStarted,total_ms:Date.now()-searchStarted}));
+      const preparing=audioCache.prepare(track,'mp3').then(()=>{
+        console.log('[PLAY READY]',JSON.stringify({song,site:track.site || track.provider,prepare_ms:Date.now()-readyStarted,total_ms:Date.now()-searchStarted}));
+        phase='ready';
+        if(res.destroyed && !res.writableFinished)console.log('[BACKGROUND READY]',JSON.stringify({song,total_ms:Date.now()-searchStarted}));
+      });
+      preparing.catch(error=>console.error('[PREPARE ERROR]',JSON.stringify({song,error:error.message})));
+      if(process.env.EARLY_AUDIO_URL === 'false')await preparing;
       if(res.destroyed)return;
+      console.log('[AUDIO URL SENT]',JSON.stringify({song,elapsed_ms:Date.now()-searchStarted,early:process.env.EARLY_AUDIO_URL !== 'false'}));
       const p = audioPath(track);
       return json(res,200,{title:track.title,artist:track.artist,audio_url:p,audio_full_url:base ? base+p : p,m3u8_url:'',lyric_url:'',cover_url:'',duration:track.duration || 0,from_cache:track.provider==='catalog' || !!track.from_cache,source_page:track.source_page || '',site:track.site || track.provider,ip:''});
     }
