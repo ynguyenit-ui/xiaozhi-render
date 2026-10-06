@@ -1,4 +1,4 @@
-// SoundCloud -> YouTube -> Audius / Internet Archive; ưu tiên YouTube theo yêu cầu.
+// Mặc định YouTube -> SoundCloud -> Audius / Internet Archive.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -94,7 +94,7 @@ async function extract(target, flat = false) {
 
   const task = (async () => {
     const data = await extractUncached(target, flat);
-    let ttl = flat ? ((data.entries || []).length ? 300000 : 60000) : 90000;
+    let ttl = flat ? ((data.entries || []).length ? 300000 : 60000) : setting('AUDIO_LINK_CACHE_MS', 1800000, 90000, 3600000);
     if (!flat) {
       if (data.is_live || data.has_drm || !/^https?:\/\//.test(data.url || '')) {
         return data;
@@ -192,18 +192,27 @@ function extractUncached(target, flat = false) {
     const started = Date.now();
     if (process.env.DEBUG_EXTRACTOR === 'true') args.push('--verbose');
     if (/^https:\/\/(?:[^/]+\.)?youtube\.com\//i.test(target) || target.startsWith('ytsearch')) {
-      args.push('--js-runtimes', 'node');
+      args.push('--js-runtimes', process.env.YOUTUBE_JS_RUNTIME || 'node');
     }
     if (flat) args.push('--flat-playlist');
     else args.push('-f', 'bestaudio[protocol=https]/bestaudio[protocol=http]/best[protocol=https]/best[protocol=http]');
     args.push('--', target);
-    const p = spawn(process.env.PYTHON_PATH || 'python3', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn(process.env.PYTHON_PATH || 'python3', args, {
+      stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32'
+    });
+    function stopExtractor() {
+      // Dừng cả runtime JS con khi extractor hết giờ, tránh để lại tiến trình chiếm CPU.
+      if (process.platform !== 'win32' && p.pid) {
+        try {process.kill(-p.pid, 'SIGKILL'); return;} catch {}
+      }
+      p.kill('SIGKILL');
+    }
     let out = '', err = '', done = false;
     const timeout = flat
       ? setting('SC_SEARCH_TIMEOUT_MS', 8000, 1000, 30000)
-      : setting('AUDIO_EXTRACT_TIMEOUT_MS', 12000, 1000, 60000);
+      : setting('AUDIO_EXTRACT_TIMEOUT_MS', 60000, 1000, 90000);
     const timer = setTimeout(() => {
-      p.kill('SIGKILL');
+      stopExtractor();
       const e = Error('Extractor timeout'); e.code = 'SOURCE_TIMEOUT';
       finish(e);
     }, timeout);
@@ -234,7 +243,7 @@ function extractUncached(target, flat = false) {
     }
     p.stdout.on('data', d => {
       out += d;
-      if (out.length > 4000000) { p.kill('SIGKILL'); finish(Error('Output too large')); }
+      if (out.length > 4000000) { stopExtractor(); finish(Error('Output too large')); }
     });
     p.stderr.on('data', d => { err = (err + d).slice(-16000); });
     p.once('error', e => finish(e));
@@ -364,7 +373,7 @@ export async function resolveWeb(song, artist = '', options = {}) {
   const task = resolveFresh(request).then(track => {
     if (track) {
       if (resolvedCache.size >= 100) resolvedCache.delete(resolvedCache.keys().next().value);
-      resolvedCache.set(key, { track, expires: Date.now() + 45000 });
+      resolvedCache.set(key, { track, expires: Date.now() + 1800000 });
     }
     return track;
   });
@@ -378,7 +387,8 @@ async function resolveFresh({ song, artist, preferred }) {
   if (!song) return null;
   const enabledSC = process.env.ENABLE_SOUNDCLOUD !== 'false';
   const enabledYT = process.env.ENABLE_YOUTUBE === 'true';
-  const order = preferred === 'youtube'
+  const youtubeFirst = preferred === 'youtube' || process.env.DEFAULT_MUSIC_SOURCE !== 'soundcloud';
+  const order = youtubeFirst
     ? ['YouTube', 'SoundCloud', 'Audius / Internet Archive']
     : ['SoundCloud', 'YouTube', 'Audius / Internet Archive'];
   const searches = new Map();
@@ -400,8 +410,8 @@ async function resolveFresh({ song, artist, preferred }) {
     }
     return searches.get(site);
   }
-  // Search YouTube metadata while SoundCloud is working; selection still follows order.
-  if (preferred !== 'youtube' && process.env.PARALLEL_SEARCH !== 'false') {
+  // Chỉ tìm song song khi người dùng đặt lại mặc định SoundCloud.
+  if (!youtubeFirst && process.env.PARALLEL_SEARCH !== 'false') {
     if (enabledSC) start('SoundCloud');
     if (enabledYT && (blockedUntil.get('YouTube') || 0) <= Date.now()) start('YouTube');
   }
