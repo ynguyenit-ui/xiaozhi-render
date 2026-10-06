@@ -475,3 +475,37 @@ async function resolveFresh({ song, artist, preferred }) {
   console.log('[SEARCH DONE]', JSON.stringify({ song, found: false, ms: Date.now() - started }));
   return null;
 }
+// Tìm metadata, chưa lấy link audio hoặc kiểm tra nguồn phát.
+export async function searchMusicMetadata(song, artist='', options={}) {
+  const request=parseMusicRequest(song,artist,options.preferred || options.source || '');
+  const youtubeFirst=request.preferred==='youtube' || process.env.DEFAULT_MUSIC_SOURCE!=='soundcloud';
+  const order=youtubeFirst?['YouTube','SoundCloud','Audius / Internet Archive']:['SoundCloud','YouTube','Audius / Internet Archive'];
+  const functions={
+    YouTube:()=>searchYouTubeAPI(request.song,request.artist),
+    SoundCloud:()=>searchSoundCloud(request.song,request.artist),
+    'Audius / Internet Archive':async()=>{
+      const result=await searchWeb(request.song,request.artist);
+      return result.candidates.filter(t=>t.site==='Audius' || t.site==='Internet Archive');
+    }
+  };
+  const pending=new Map();
+  function start(site){
+    if(!pending.has(site))pending.set(site,Promise.resolve().then(functions[site]).then(candidates=>({candidates}),error=>({error})));
+    return pending.get(site);
+  }
+  if(!youtubeFirst && process.env.PARALLEL_SEARCH!=='false' && process.env.ENABLE_YOUTUBE==='true')start('YouTube');
+  console.log('[METADATA ORDER]',order.join(' -> '));
+  for(const site of order){
+    if(site==='YouTube' && process.env.ENABLE_YOUTUBE!=='true')continue;
+    if(site==='SoundCloud' && process.env.ENABLE_SOUNDCLOUD==='false')continue;
+    if((blockedUntil.get(site) || 0)>Date.now())continue;
+    const outcome=await start(site);
+    if(outcome.error){console.warn('[METADATA ERROR]',site,outcome.error.message);continue;}
+    const first=outcome.candidates[0];
+    if(first){
+      console.log('[METADATA FOUND]',JSON.stringify({song:request.song,site,title:first.title}));
+      return {...first,id:Buffer.from(first.source_page).toString('base64url')};
+    }
+  }
+  return null;
+}
