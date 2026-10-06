@@ -75,9 +75,37 @@ async function sourceFor(track) {
   throw Error('Track has no audio source');
 }
 const audioCache = createAudioCache(sourceFor,rate);
+// Giải phóng suất phát ngay khi socket đóng; ưu tiên robot khi trình duyệt chiếm hết suất.
+const audioSessions=new Set();
+function acquireAudio(req,res){
+  if(res.destroyed || res.writableEnded)return null;
+  const robot=/ESP32-Music-Player/i.test(req.headers['user-agent'] || '');
+  const peer=String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  if(robot){
+    for(const session of [...audioSessions])if(session.robot && session.peer===peer){
+      console.log('[AUDIO REPLACED] previous stream from same robot');session.res.destroy();session.release();
+    }
+    if(active>=maxStreams){
+      const browser=[...audioSessions].find(session=>!session.robot);
+      if(browser){console.log('[AUDIO REPLACED] browser stream; robot priority');browser.res.destroy();browser.release();}
+    }
+  }
+  if(active>=maxStreams){json(res,429,{error:'Host busy; all audio slots occupied'});return null;}
+  const session={robot,peer,res,release:null};let released=false;
+  session.release=()=>{
+    if(released)return;released=true;audioSessions.delete(session);active=Math.max(0,active-1);
+    res.off('close',session.release);res.off('finish',session.release);res.off('error',session.release);
+    res.setTimeout(0);
+  };
+  active++;audioSessions.add(session);
+  res.once('close',session.release);res.once('finish',session.release);res.once('error',session.release);
+  // Ngắt kết nối không nhận dữ liệu, kể cả trường hợp kẹt drain.
+  res.setTimeout(30000,()=>{console.warn('[AUDIO IDLE CLOSED]');res.destroy();session.release();});
+  return session.release;
+}
 async function stream(track,format,req,res) {
-  if(active >= maxStreams)return json(res,429,{error:'Host busy; retry shortly'});
-  active++;
+  if(req.method==='HEAD'){res.writeHead(200,{'Content-Type':format==='mp3'?'audio/mpeg':'application/octet-stream','Cache-Control':'no-store'});return res.end();}
+  const release=acquireAudio(req,res);if(!release)return;
   const audioStarted=Date.now();
   res.once('close',()=>{
     if(!res.writableFinished)console.warn('[AUDIO CLIENT CLOSED]',JSON.stringify({title:track.title,elapsed_ms:Date.now()-audioStarted}));
@@ -87,7 +115,7 @@ async function stream(track,format,req,res) {
     console.error('[AUDIO]',err.message);
     if(!res.headersSent)json(res,502,{error:'Audio preparation failed; check host logs'});
     else if(!res.destroyed)res.destroy();
-  } finally {active--;}
+  } finally {release();}
 }
 // Trả metadata sớm; chờ nguồn/file ở luồng phát, có MP3 im lặng giữ dữ liệu.
 const musicJobs=new Map(), musicJobKeys=new Map(), metadataPending=new Map();
@@ -199,9 +227,9 @@ async function streamMusicJob(job,format,req,res){
   if(req.method==='HEAD'){
     res.writeHead(200,{'Content-Type':'audio/mpeg','Cache-Control':'no-store','Accept-Ranges':'none'});return res.end();
   }
-  if(active>=maxStreams)return json(res,429,{error:'Host busy; retry shortly'});
+  const release=acquireAudio(req,res);if(!release)return;
   if(job.state==='ready' && !fs.existsSync(job.entry.file))startMusicJob(job);
-  active++;const started=Date.now();
+  const started=Date.now();
   res.once('close',()=>{if(!res.writableFinished)console.warn('[AUDIO CLIENT CLOSED]',JSON.stringify({song:job.song,elapsed_ms:Date.now()-started}));});
   try{
     const quiet=await silence();
@@ -220,7 +248,7 @@ async function streamMusicJob(job,format,req,res){
     console.error('[AUDIO JOB]',error.message);
     if(!res.headersSent)json(res,502,{error:'Music preparation failed; check host logs'});
     else if(!res.destroyed)res.destroy();
-  }finally{active--;}
+  }finally{release();}
 }
 
 function audioPath(track, format='mp3') {
@@ -264,7 +292,7 @@ const server = http.createServer(async (req,res) => {
         const metadata=job.state==='ready'?job.track:job.metadata;
         const p='/audio?'+new URLSearchParams({provider:'job',id:job.id,format:'mp3'});
         console.log('[AUDIO URL SENT]',JSON.stringify({song,elapsed_ms:Date.now()-searchStarted,async:true,job:job.id}));
-        return json(res,200,{title:metadata.title || song,artist:metadata.artist || artist,audio_url:p,audio_full_url:base?base+p:p,m3u8_url:'',lyric_url:'',cover_url:'',duration:job.state==='ready'?(metadata.duration || 0):0,from_cache:job.state==='ready',source_page:metadata.source_page || '',site:metadata.site || metadata.provider,ip:'',preparing:job.state==='pending'});
+        return json(res,200,{title:metadata.title || song,artist:metadata.artist || artist,audio_url:p,audio_full_url:base?base+p:p,m3u8_url:'',lyric_url:'',cover_url:'',duration:metadata.duration || 0,from_cache:job.state==='ready',source_page:metadata.source_page || '',site:metadata.site || metadata.provider,ip:'',preparing:job.state==='pending'});
       }
       const track = await resolveTrack(song,artist,preferred);
       if (!track) return json(res,404,{error:'Không tìm thấy bài khớp. Thêm bài vào catalog.json hoặc thử tên khác.',title:song,artist});
