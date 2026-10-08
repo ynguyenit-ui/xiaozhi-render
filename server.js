@@ -2,7 +2,7 @@ import { searchPodcast, parsePodcastRequest, podcastAudio } from './podcast.js';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { createAudioCache } from './audio-cache.js';
+import { createAudioCache, AUDIO_BITRATE_KBPS } from './audio-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -189,7 +189,7 @@ function silence(){
     silentMP3=new Promise((resolve,reject)=>{
       const child=spawn(process.env.FFMPEG_PATH || 'ffmpeg',[
         '-hide_banner','-loglevel','error','-nostdin','-f','lavfi','-i',`anullsrc=r=${rate}:cl=mono`,
-        '-t','1','-c:a','libmp3lame','-b:a','64k','-write_xing','0','-id3v2_version','0','-write_id3v1','0','-f','mp3','pipe:1'
+        '-t','1','-c:a','libmp3lame','-b:a',`${AUDIO_BITRATE_KBPS}k`,'-write_xing','0','-id3v2_version','0','-write_id3v1','0','-f','mp3','pipe:1'
       ],{stdio:['ignore','pipe','pipe']});
       const chunks=[];let size=0,stderr='';
       const timer=setTimeout(()=>{child.kill('SIGKILL');reject(Error('Cannot prepare waiting audio'));},10000);
@@ -236,7 +236,7 @@ async function streamMusicJob(job,format,req,res){
     if(res.destroyed)return;
     if(job.state==='ready')return await (job.progressive?audioCache.serveGrowing(job.entry,req,res):audioCache.serve(job.track,format,req,res));
     if(job.state==='failed')return json(res,502,{error:'Music preparation failed; check host logs'});
-    res.writeHead(200,{'Content-Type':'audio/mpeg','Cache-Control':'no-store','Accept-Ranges':'none','X-Audio-Sample-Rate':String(rate),'X-Audio-Channels':'1','X-Music-Waiting':'1'});
+    res.writeHead(200,{'Content-Type':'audio/mpeg','Cache-Control':'no-store','Accept-Ranges':'none','X-Audio-Sample-Rate':String(rate),'X-Audio-Channels':'1','X-Audio-Bitrate-Kbps':String(AUDIO_BITRATE_KBPS),'X-Music-Waiting':'1'});
     res.flushHeaders();
     console.log('[WAIT AUDIO]',JSON.stringify({song:job.song,job:job.id}));
     while(job.state==='pending' && !res.destroyed){await writeWaiting(res,quiet);await waitMusic(job,res,1000);}
@@ -260,7 +260,7 @@ const server = http.createServer(async (req,res) => {
   try {
     const u = new URL(req.url,'http://localhost');
     if (!['GET','HEAD'].includes(req.method)) return json(res,405,{error:'GET only'});
-    if (u.pathname === '/health') return json(res,200,{status:'ok',active_streams:active,mode,sample_rate:rate,catalog_tracks:catalog.length});
+    if (u.pathname === '/health') return json(res,200,{status:'ok',active_streams:active,mode,sample_rate:rate,audio_bitrate_kbps:AUDIO_BITRATE_KBPS,catalog_tracks:catalog.length});
     if (u.pathname === '/') {res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});return res.end(req.method === 'HEAD' ? '' : page);}
     if (req.method === 'HEAD' && u.pathname !== '/audio') {res.writeHead(405);return res.end();}
     if (u.pathname === '/candidates') {
@@ -337,4 +337,4 @@ const server = http.createServer(async (req,res) => {
     json(res,404,{error:'Unknown endpoint'});
   } catch(err) {console.error('[REQUEST]',err.message);if(!res.headersSent)json(res,502,{error:'Music search failed; check host logs / Audius configuration'});else res.destroy();}
 });
-server.listen(Number(process.env.PORT || 10000),'0.0.0.0',() => console.log(`Music host listening; mode=${mode}; rate=${rate}`));
+server.listen(Number(process.env.PORT || 10000),'0.0.0.0',() => console.log(`Music host listening; mode=${mode}; rate=${rate}; bitrate=${AUDIO_BITRATE_KBPS}kbps`));
