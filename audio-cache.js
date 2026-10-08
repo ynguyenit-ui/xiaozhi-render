@@ -10,6 +10,8 @@ function number(name, fallback, min, max) {
   const n = Number(process.env[name]);
   return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
 }
+export const AUDIO_BITRATE_KBPS = Number(process.env.AUDIO_BITRATE_KBPS || 128);
+if (![64,128].includes(AUDIO_BITRATE_KBPS)) throw Error('AUDIO_BITRATE_KBPS must be 64 or 128');
 export function createAudioCache(sourceFor, rate) {
   const directory = process.env.AUDIO_CACHE_DIR || path.join(os.tmpdir(), 'xiaozhi-audio-v2');
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -32,7 +34,7 @@ export function createAudioCache(sourceFor, rate) {
   }
   prune();
   function keyFor(track, format) {
-    return createHash('sha256').update(JSON.stringify([track.provider, track.source_page || track.id, track.source_file || track.source_url || '', format, rate, 64])).digest('hex') + '.' + format;
+    return createHash('sha256').update(JSON.stringify([track.provider, track.source_page || track.id, track.source_file || track.source_url || '', format, rate, AUDIO_BITRATE_KBPS])).digest('hex') + '.' + format;
   }
   async function* download(source, signal, podcast=false) {
     const segmented = /(^|\.)googlevideo\.com$/i.test(new URL(source.url).hostname);
@@ -116,7 +118,7 @@ export function createAudioCache(sourceFor, rate) {
       const source = await sourceFor(track);
       if (controller.signal.aborted) throw Error('Audio preparation timeout');
       const args = ['-hide_banner','-loglevel','error','-nostdin',...(['nct','podcast'].includes(track.provider)?['-probesize','32768','-analyzeduration','0']:[]),'-i',source.file || 'pipe:0','-t',track.provider==='podcast'?'7200':'900','-vn','-ac','1','-ar',String(rate)];
-      args.push(...(format === 'pcm' ? ['-c:a','pcm_s16le','-f','s16le'] : ['-c:a','libmp3lame','-b:a','64k','-write_xing','0','-id3v2_version','0','-write_id3v1','0','-f','mp3']), 'pipe:1');
+      args.push(...(format === 'pcm' ? ['-c:a','pcm_s16le','-f','s16le'] : ['-c:a','libmp3lame','-b:a',`${AUDIO_BITRATE_KBPS}k`,'-write_xing','0','-id3v2_version','0','-write_id3v1','0','-f','mp3']), 'pipe:1');
       child = spawn(process.env.FFMPEG_PATH || 'ffmpeg', args, { stdio: ['pipe','pipe','pipe'] });
       child.stderr.on('data', d => { stderr = (stderr+d).slice(-1000); });
       child.stdin.on('error', () => {});
@@ -131,7 +133,7 @@ export function createAudioCache(sourceFor, rate) {
       let bytes = 0;
       const limit = new Transform({ transform(chunk,encoding,callback) {
         bytes += chunk.length;
-        callback(bytes > (track.provider==='podcast'?64:48) * 1024 * 1024 ? Error('Prepared audio exceeds size limit') : null, chunk);
+        callback(bytes > (track.provider==='podcast'?128:48) * 1024 * 1024 ? Error('Prepared audio exceeds size limit') : null, chunk);
       }});
       const tasks = [feed, exited, pipeline(child.stdout,limit,fs.createWriteStream(temporary,{flags:'wx',mode:0o600}))];
       try {await Promise.all(tasks);}
@@ -144,7 +146,7 @@ export function createAudioCache(sourceFor, rate) {
       fs.renameSync(temporary,file);
       const entry = Object.assign(state || {},{ file, size:bytes, expires:Date.now()+ttl, used:Date.now(), readers:state?.readers || 0, done:true });
       entries.set(key,entry); prune(key);
-      console.log('[AUDIO READY]',JSON.stringify({title:track.title,format,bytes,ms:Date.now()-started}));
+      console.log('[AUDIO READY]',JSON.stringify({title:track.title,format,bitrate_kbps:format==='mp3'?AUDIO_BITRATE_KBPS:null,bytes,ms:Date.now()-started}));
       return entry;
     } catch(error){
       if(state){state.error=error;state.done=true;}throw error;
@@ -174,10 +176,10 @@ export function createAudioCache(sourceFor, rate) {
     complete.catch(()=>{});
     const state=growing.get(keyFor(track,'mp3'));
     if(!state)return complete;
-    const threshold=number(track.provider==='podcast'?'PODCAST_BUFFER_SECONDS':'NCT_BUFFER_SECONDS',8,3,30)*8000;
+    const threshold=number(track.provider==='podcast'?'PODCAST_BUFFER_SECONDS':'NCT_BUFFER_SECONDS',8,3,30)*(AUDIO_BITRATE_KBPS*1000/8);
     while(!state.done){
       if(state.file && fs.existsSync(state.file) && fs.statSync(state.file).size>=threshold){
-        console.log('[AUDIO BUFFER READY]',JSON.stringify({title:track.title,buffer_seconds:threshold/8000}));
+        console.log('[AUDIO BUFFER READY]',JSON.stringify({title:track.title,buffer_seconds:threshold/(AUDIO_BITRATE_KBPS*1000/8),bitrate_kbps:AUDIO_BITRATE_KBPS}));
         return state;
       }
       await Promise.race([pause(100),complete.then(()=>{},()=>{})]);
@@ -194,7 +196,7 @@ export function createAudioCache(sourceFor, rate) {
       try{handle=await fs.promises.open(firstPath,'r');}
       catch(error){if(error.code!=='ENOENT' || entry.file===firstPath)throw error;handle=await fs.promises.open(entry.file,'r');}
       if(res.destroyed)return;
-      if(!options.append)res.writeHead(200,{'Content-Type':'audio/mpeg','Accept-Ranges':'none','Cache-Control':'no-store','X-Audio-Sample-Rate':String(rate),'X-Audio-Channels':'1'});
+      if(!options.append)res.writeHead(200,{'Content-Type':'audio/mpeg','Accept-Ranges':'none','Cache-Control':'no-store','X-Audio-Sample-Rate':String(rate),'X-Audio-Channels':'1','X-Audio-Bitrate-Kbps':String(AUDIO_BITRATE_KBPS)});
       if(req.method==='HEAD'){res.end();return;}
       let position=0;
       const buffer=Buffer.alloc(32768);
@@ -236,7 +238,7 @@ export function createAudioCache(sourceFor, rate) {
         }
         status=206;
       }
-      const headers={'Content-Type':format==='pcm'?'application/octet-stream':'audio/mpeg','Content-Length':end-start+1,'Accept-Ranges':'bytes','Cache-Control':'private, max-age=300','X-Audio-Sample-Rate':String(rate),'X-Audio-Channels':'1'};
+      const headers={'Content-Type':format==='pcm'?'application/octet-stream':'audio/mpeg','Content-Length':end-start+1,'Accept-Ranges':'bytes','Cache-Control':'private, max-age=300','X-Audio-Sample-Rate':String(rate),'X-Audio-Channels':'1','X-Audio-Bitrate-Kbps':String(AUDIO_BITRATE_KBPS)};
       if(status===206)headers['Content-Range']=`bytes ${start}-${end}/${entry.size}`;
       if(options.append && format==='mp3') {
         // Bỏ ID3 ở giữa luồng sau các frame im lặng; giữ nguyên frame nhạc.
