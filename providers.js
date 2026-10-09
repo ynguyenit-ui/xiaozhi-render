@@ -1,4 +1,4 @@
-// NhạcCủaTui MP3 trực tiếp; giữ các nguồn dự phòng.
+// Ưu tiên ZingMP3; giữ NhạcCủaTui và các nguồn dự phòng.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -272,9 +272,9 @@ function musicOrder(preferred,skipNCT=false){
   if(preferred==='commons')return ['Wikimedia Commons'];
   if(preferred==='open')return ['Nguồn mở'];
   if(preferred==='zingmp3')return process.env.ENABLE_ZINGMP3==='false'?[]:['ZingMP3'];
-  const defaults=process.env.DEFAULT_MUSIC_SOURCE || 'nhaccuatui';
-  const first=preferred==='youtube'?'YouTube':defaults==='soundcloud'?'SoundCloud':defaults==='youtube'?'YouTube':'NhạcCủaTui';
-  return [first,...['NhạcCủaTui','YouTube','SoundCloud','Nguồn mở','ZingMP3'].filter(x=>x!==first)]
+  const defaults=process.env.DEFAULT_MUSIC_SOURCE || 'zingmp3';
+  const first=preferred==='youtube'?'YouTube':defaults==='soundcloud'?'SoundCloud':defaults==='youtube'?'YouTube':defaults==='nhaccuatui'?'NhạcCủaTui':'ZingMP3';
+  return [first,...['ZingMP3','NhạcCủaTui','YouTube','SoundCloud','Nguồn mở'].filter(x=>x!==first)]
     .filter(x=>x!=='NhạcCủaTui' || (!skipNCT && process.env.ENABLE_NCT!=='false'));
 }
 async function getJSON(url) {

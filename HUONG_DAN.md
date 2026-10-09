@@ -57,7 +57,7 @@ Endpoint `/stream_pcm` có 3 chế độ, tên endpoint không chứng minh dữ
 
 ## 3. Tìm kiếm thông minh trên nhiều nguồn
 
-ZingMP3 được tìm trực tiếp bằng client cộng đồng đã ghim phiên bản trong `package-lock.json`; không cần Brave key; mặc định dùng phiên ẩn danh. Chỉ giữ ứng viên khi API trả URL HTTPS ở mức `128 kbps`; bài không có mức 128, bị VIP, không có quyền theo vùng hoặc không lấy được luồng sẽ bị bỏ qua. Không lấy 320 kbps làm dự phòng, chế độ dùng phiên tài khoản được mô tả ở mục bên dưới. Zing là nguồn cuối để các nguồn đang chạy được thử trước. Tắt riêng nguồn này bằng `ENABLE_ZINGMP3=false`.
+ZingMP3 được tìm trực tiếp bằng client cộng đồng đã ghim phiên bản trong `package-lock.json`; không cần Brave key; mặc định dùng phiên ẩn danh. Chỉ giữ ứng viên khi API trả URL HTTPS ở mức `128 kbps`; bài không có mức 128, bị VIP, không có quyền theo vùng hoặc không lấy được luồng sẽ bị bỏ qua. Không lấy 320 kbps làm dự phòng, chế độ dùng phiên tài khoản được mô tả ở mục bên dưới. Mặc định thử ZingMP3 → NhạcCủaTui → YouTube → SoundCloud → Nguồn mở. `DEFAULT_MUSIC_SOURCE=zingmp3` áp dụng thứ tự này cho cả metadata và nguồn phát khi ESP32 không chỉ định nguồn. Tắt riêng nguồn này bằng `ENABLE_ZINGMP3=false`.
 
 NhạcCủaTui cũng được tìm qua API công khai, SoundCloud qua yt-dlp, Audius / Internet Archive qua API của từng nguồn. YouTube dùng `YOUTUBE_API_KEY` khi bật `ENABLE_YOUTUBE=true`. Luồng tìm kiếm hiện tại không cần `BRAVE_SEARCH_API_KEY`. Trang `/candidates` chỉ kiểm tra nhóm nguồn trong `searchWeb`; dùng `/search?song=...` để thử luồng tìm kiếm đầy đủ, và xem log `[ZING SEARCH]` khi các nguồn trước không tìm được bài.
 
@@ -121,7 +121,7 @@ Giới hạn mặc định: 2 luồng chuyển mã đồng thời, mỗi luồng
 
 ## Thử riêng nguồn Zing MP3
 
-Dùng `/search?song=Sóng%20Gió&source=zingmp3` hoặc nói “mở bài Sóng Gió trên Zing MP3”. Yêu cầu có nguồn Zing sẽ chỉ thử Zing, để không trả nhầm kết quả từ nguồn khác. Tìm nhạc thông thường vẫn giữ thứ tự nguồn cũ.
+Dùng `/search?song=Sóng%20Gió&source=zingmp3` hoặc nói “mở bài Sóng Gió trên Zing MP3”. Yêu cầu có nguồn Zing sẽ chỉ thử Zing, để không trả nhầm kết quả từ nguồn khác. Tìm nhạc thông thường ưu tiên ZingMP3, sau đó NhạcCủaTui và các nguồn dự phòng.
 
 Dùng `/candidates?song=Sóng%20Gió&source=zingmp3` để xem bài tìm được, ca sĩ và khả năng phát. `playable=false` với `reason=region_restricted` và `code=-1110` nghĩa là Zing tìm thấy bài nhưng không cho host hiện tại lấy âm thanh. `no_public_128` nghĩa là không có luồng 128 kbps công khai. Không trả bài bị hạn chế như một kết quả có thể nghe được.
 
