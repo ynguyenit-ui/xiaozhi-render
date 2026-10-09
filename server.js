@@ -3,7 +3,7 @@ import { proxyChecks, runProxyChecks } from './zing-proxy-check.js';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { createAudioCache, AUDIO_BITRATE_KBPS } from './audio-cache.js';
+import { createAudioCache, AUDIO_BITRATE_KBPS, usesProgressiveAudio } from './audio-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -141,18 +141,18 @@ function startMusicJob(job){
     if(!track)throw Error('No playable matching source');
     const prepareStarted=Date.now();
     let entry;
-    try{entry=['nct','podcast'].includes(track.provider)?await audioCache.playable(track):await audioCache.prepare(track,'mp3');}
+    try{entry=usesProgressiveAudio(track)?await audioCache.playable(track):await audioCache.prepare(track,'mp3');}
     catch(error){
       if(track.provider!=='nct')throw error;
       console.warn('[NCT FALLBACK]',error.message);
       track=await resolveTrack(job.song,job.artist,job.preferred,{skipNCT:true});
       if(!track)throw Error('NCT failed and no playable fallback');
-      entry=await audioCache.prepare(track,'mp3');
+      entry=usesProgressiveAudio(track)?await audioCache.playable(track):await audioCache.prepare(track,'mp3');
     }
     return {track,entry,prepare_ms:Date.now()-prepareStarted};
   })();
   job.ready=deadline(work,180000,'Music job timed out').then(result=>{
-    job.state='ready';job.track=result.track;job.entry=result.entry;job.progressive=(result.track.provider==='nct' && process.env.NCT_PROGRESSIVE!=='false') || (result.track.provider==='podcast' && process.env.PODCAST_PROGRESSIVE!=='false');job.expires=Date.now()+1800000;
+    job.state='ready';job.track=result.track;job.entry=result.entry;job.progressive=usesProgressiveAudio(result.track);job.expires=Date.now()+1800000;
     console.log('[PLAY READY]',JSON.stringify({song:job.song,site:result.track.site || result.track.provider,prepare_ms:result.prepare_ms,total_ms:Date.now()-started,job:job.id}));
     return job;
   },error=>{

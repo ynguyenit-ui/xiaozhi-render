@@ -121,6 +121,8 @@ Giới hạn mặc định: 2 luồng chuyển mã đồng thời, mỗi luồng
 
 ## Thử riêng nguồn Zing MP3
 
+Zing phát MP3 trong khi ghi cache khi `ZING_PROGRESSIVE` không phải `false`. Host đợi bộ đệm mặc định 8 giây âm thanh (`ZING_BUFFER_SECONDS`, từ 3 đến 30), sau đó gửi frame nhạc trong khi tiếp tục tải/chuyển đổi. Nhạc không bị cắt ở 15 phút; vẫn giữ giới hạn kích thước nguồn, file xuất và thời gian chuẩn bị. Bộ đệm 8 giây là lượng âm thanh, không phải cam kết thời gian chờ thực tế. Đặt `ZING_PROGRESSIVE=false` để đợi toàn bộ file như trước.
+
 Dùng `/search?song=Sóng%20Gió&source=zingmp3` hoặc nói “mở bài Sóng Gió trên Zing MP3”. Yêu cầu có nguồn Zing sẽ chỉ thử Zing, để không trả nhầm kết quả từ nguồn khác. Tìm nhạc thông thường ưu tiên ZingMP3, sau đó NhạcCủaTui và các nguồn dự phòng.
 
 Dùng `/candidates?song=Sóng%20Gió&source=zingmp3` để xem bài tìm được, ca sĩ và khả năng phát. `playable=false` với `reason=region_restricted` và `code=-1110` nghĩa là Zing tìm thấy bài nhưng không cho host hiện tại lấy âm thanh. `no_public_128` nghĩa là không có luồng 128 kbps công khai. Không trả bài bị hạn chế như một kết quả có thể nghe được.
