@@ -57,7 +57,7 @@ Endpoint `/stream_pcm` có 3 chế độ, tên endpoint không chứng minh dữ
 
 ## 3. Tìm kiếm thông minh trên nhiều nguồn
 
-ZingMP3 được tìm trực tiếp bằng client cộng đồng đã ghim phiên bản trong `package-lock.json`; không cần Brave key và không đăng nhập tài khoản. Chỉ giữ ứng viên khi API trả URL HTTPS ở mức `128 kbps`; bài không có mức 128, bị VIP, không có quyền theo vùng hoặc không lấy được luồng sẽ bị bỏ qua. Không lấy 320 kbps làm dự phòng, không dùng cookie tài khoản và không vượt khóa vùng. Zing là nguồn cuối để các nguồn đang chạy được thử trước. Tắt riêng nguồn này bằng `ENABLE_ZINGMP3=false`.
+ZingMP3 được tìm trực tiếp bằng client cộng đồng đã ghim phiên bản trong `package-lock.json`; không cần Brave key; mặc định dùng phiên ẩn danh. Chỉ giữ ứng viên khi API trả URL HTTPS ở mức `128 kbps`; bài không có mức 128, bị VIP, không có quyền theo vùng hoặc không lấy được luồng sẽ bị bỏ qua. Không lấy 320 kbps làm dự phòng, chế độ dùng phiên tài khoản được mô tả ở mục bên dưới. Zing là nguồn cuối để các nguồn đang chạy được thử trước. Tắt riêng nguồn này bằng `ENABLE_ZINGMP3=false`.
 
 NhạcCủaTui cũng được tìm qua API công khai, SoundCloud qua yt-dlp, Audius / Internet Archive qua API của từng nguồn. YouTube dùng `YOUTUBE_API_KEY` khi bật `ENABLE_YOUTUBE=true`. Luồng tìm kiếm hiện tại không cần `BRAVE_SEARCH_API_KEY`. Trang `/candidates` chỉ kiểm tra nhóm nguồn trong `searchWeb`; dùng `/search?song=...` để thử luồng tìm kiếm đầy đủ, và xem log `[ZING SEARCH]` khi các nguồn trước không tìm được bài.
 
@@ -65,7 +65,7 @@ Xếp hạng: bỏ dấu, khớp từ trong tên bài, kiểm tra tên ca sĩ, c
 
 Xem kết quả và lỗi nguồn bằng `/candidates?song=L%E1%BA%A1c%20Tr%C3%B4i&artist=S%C6%A1n%20T%C3%B9ng%20M-TP`.
 
-YouTube và SoundCloud dùng yt-dlp để lấy nguồn phát. Zing dùng trực tiếp URL 128 kbps do API xác nhận, lưu tối đa 60 giây rồi lấy lại; NhạcCủaTui dùng URL MP3 công khai từ API. Render có thể bị YouTube chặn IP/yêu cầu đăng nhập; Zing có thể trả lỗi không khả dụng theo quốc gia của máy chủ. Lỗi quốc gia của một bài chỉ loại luồng của bài đó; host vẫn tìm được metadata và tiếp tục kiểm tra các bài khác. Không tự vượt bước đăng nhập, giới hạn vùng, VIP hay DRM. Zing được thử từ môi trường kiểm tra; các bài mẫu trả lỗi khóa quốc gia nên chưa xác nhận được phát thực tế.
+YouTube và SoundCloud dùng yt-dlp để lấy nguồn phát. Zing dùng trực tiếp URL 128 kbps do API xác nhận, lưu tối đa 60 giây rồi lấy lại; NhạcCủaTui dùng URL MP3 công khai từ API. Render có thể bị YouTube chặn IP/yêu cầu đăng nhập; Zing có thể trả lỗi không khả dụng theo quốc gia của máy chủ. Lỗi quốc gia của một bài chỉ loại luồng của bài đó; host vẫn tìm được metadata và tiếp tục kiểm tra các bài khác. Không tự vượt bước đăng nhập, giới hạn vùng, VIP hay DRM. Render đã tải hoàn chỉnh Sóng Gió và Bạc Phận 128 kbps khi API qua proxy Việt Nam và CDN được tải trực tiếp. Chế độ tài khoản trực tiếp chưa được xác nhận với phiên thật.
 
 Tìm nguồn và kiểm tra ứng viên có thể mất vài chục giây: timeout firmware có thể ngắn hơn. Với bài hay nghe, thêm catalog để bỏ qua tìm kiếm. Không bảo đảm nguồn online chạy ổn định 24/7. Có thể tắt bằng ENABLE_WEB_SEARCH=false.
 
@@ -139,6 +139,14 @@ Host giữ nguyên giao thức JSON và âm thanh MP3 128 kbps cho firmware hi�
 
 
 ## Proxy Việt Nam riêng cho Zing MP3
+
+### Thử phiên đăng nhập qua kết nối trực tiếp
+
+Biến bí mật `ZING_SESSION_COOKIE` nhận giá trị của header `Cookie` từ phiên Zing MP3 của chính bạn. Chỉ cấu hình trong Render Environment; không gửi cookie, mật khẩu hoặc OTP trong chat, không ghi vào GitHub. Cookie có quyền truy cập tài khoản và có thể hết hạn; bản này không tự đăng nhập Zalo hoặc tự gia hạn phiên.
+
+Khi biến này có giá trị, API Zing dùng phiên đó qua HTTPS trực tiếp, bỏ qua `ZING_PROXY_URL` dù proxy vẫn còn trong cấu hình. Không lấy cookie ẩn danh trước mỗi phiên API; không gửi cookie tài khoản cho CDN âm thanh hay proxy. Yêu cầu chỉ được gửi đến hai endpoint tìm kiếm và lấy luồng trên `zingmp3.vn`, không theo redirect mang theo cookie. Xóa `ZING_SESSION_COOKIE` để trở lại cấu hình trước.
+
+Đây là chế độ thử nghiệm chưa xác nhận với tài khoản thật. Đăng nhập không có nghĩa IP Render được cấp quyền nghe bài bị giới hạn vùng: mã `-1110` vẫn được giữ là `region_restricted`. Kiểm tra bằng cùng bài trên `/candidates` rồi `/search`, xác nhận log `AUDIO READY`/`PLAY READY` và nghe trên ESP32. Không kết luận thành công chỉ từ HTTP 200 của âm báo chờ.
 
 Đặt biến môi trường bí mật `ZING_PROXY_URL` trên Render với dạng `http://USERNAME:PASSWORD@HOST:PORT` hoặc proxy HTTPS. Ký tự đặc biệt trong username/password cần URL-encode. Không ghi giá trị thật vào GitHub hoặc gửi trong chat.
 

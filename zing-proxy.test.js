@@ -1,7 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createZingTransport, configureZingProxyClient } from './zing-proxy.js';
+import { createZingTransport, configureZingProxyClient, zingProxyEnabled } from './zing-proxy.js';
+
+test('account session skips anonymous-cookie requests and any configured proxy',async()=>{
+  const previousCookie=process.env.ZING_SESSION_COOKIE,previousProxy=process.env.ZING_PROXY_URL;
+  process.env.ZING_SESSION_COOKIE='session=private-fixture';
+  process.env.ZING_PROXY_URL='http://public-proxy.example:8080';
+  try{
+    const calls=[],client={CTIME:'123',VERSION:'test',API_KEY:'test'};
+    assert.equal(zingProxyEnabled(),false);
+    configureZingProxyClient(client,null,{fetchImpl:async(url,options)=>{
+      calls.push({url:String(url),options});return Response.json({err:-1110,msg:'region restricted'});
+    }});
+    const result=await client.requestZingMp3('/api/v2/song/get/streaming',{id:'TEST123',sig:'test'});
+    assert.equal(result.err,-1110); // Authentication must not conceal an upstream region restriction.
+    assert.equal(calls.length,1);
+    assert.equal(new URL(calls[0].url).hostname,'zingmp3.vn');
+    assert.equal(calls[0].options.headers.Cookie,'session=private-fixture');
+    assert.equal(calls[0].options.redirect,'error');
+    assert.equal(calls[0].options.dispatcher,undefined);
+    await assert.rejects(client.requestZingMp3('https://other.example/',{}),/Unsupported/);
+    assert.equal(calls.length,1);
+  }finally{
+    if(previousCookie===undefined)delete process.env.ZING_SESSION_COOKIE;else process.env.ZING_SESSION_COOKIE=previousCookie;
+    if(previousProxy===undefined)delete process.env.ZING_PROXY_URL;else process.env.ZING_PROXY_URL=previousProxy;
+  }
+});
+test('account-session validation and transport failures keep the session secret',async()=>{
+  const client={CTIME:'123',VERSION:'test',API_KEY:'test'};
+  assert.throws(()=>configureZingProxyClient(client,null,{sessionCookie:'session=secret\r\nInjected: value'}),e=>!e.message.includes('secret'));
+  configureZingProxyClient(client,null,{sessionCookie:'session=secret',fetchImpl:async()=>{throw Error('Cookie: session=secret');}});
+  await assert.rejects(client.requestZingMp3('/api/v2/search/multi',{q:'test'}),e=>e.message==='Zing authenticated request failed');
+});
 
 test('proxy credentials are decoded and kept out of the endpoint URI',async()=>{
   let configuration;
