@@ -6,8 +6,8 @@ export function ccMixterFetch(url, options={}, redirects=0) {
   if(u.protocol!=='https:' || u.hostname!=='ccmixter.org' || u.username || u.password || u.port ||
     !(u.pathname==='/api/query' || /^\/content\/.+\.mp3$/i.test(u.pathname)))return Promise.reject(Error('Unsupported ccMixter URL'));
   return new Promise((resolve,reject)=>{
-    // ccMixter sends a large response-header block. Bound it to 64 KiB.
-    const request=https.get(u,{maxHeaderSize:65536,signal:options.signal,
+    // ccMixter sends a large response-header block. Bound it to 256 KiB.
+    const request=https.get(u,{maxHeaderSize:262144,signal:options.signal,
       headers:{...Object.fromEntries(new Headers(options.headers)), 'Accept-Encoding':'identity'}},response=>{
       const code=response.statusCode || 502;
       if([301,302,303,307,308].includes(code) && response.headers.location){
