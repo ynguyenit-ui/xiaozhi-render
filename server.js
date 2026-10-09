@@ -1,4 +1,5 @@
 import { searchPodcast, parsePodcastRequest, podcastAudio } from './podcast.js';
+import { proxyChecks, runProxyChecks } from './zing-proxy-check.js';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -261,6 +262,7 @@ const server = http.createServer(async (req,res) => {
     const u = new URL(req.url,'http://localhost');
     if (!['GET','HEAD'].includes(req.method)) return json(res,405,{error:'GET only'});
     if (u.pathname === '/health') return json(res,200,{status:'ok',active_streams:active,mode,sample_rate:rate,audio_bitrate_kbps:AUDIO_BITRATE_KBPS,catalog_tracks:catalog.length});
+    if (u.pathname === '/zing-proxy-check') return json(res,200,proxyChecks);
     if (u.pathname === '/') {res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});return res.end(req.method === 'HEAD' ? '' : page);}
     if (req.method === 'HEAD' && u.pathname !== '/audio') {res.writeHead(405);return res.end();}
     if (u.pathname === '/candidates') {
@@ -351,3 +353,4 @@ const server = http.createServer(async (req,res) => {
   } catch(err) {console.error('[REQUEST]',err.message);if(!res.headersSent)json(res,502,{error:'Music search failed; check host logs / Audius configuration'});else res.destroy();}
 });
 server.listen(Number(process.env.PORT || 10000),'0.0.0.0',() => console.log(`Music host listening; mode=${mode}; rate=${rate}; bitrate=${AUDIO_BITRATE_KBPS}kbps`));
+if(process.env.ZING_PROXY_CHECKS)void runProxyChecks(process.env.ZING_PROXY_CHECKS).catch(()=>{proxyChecks.state='failed';console.warn('[ZING PROXY CHECK] Invalid diagnostic configuration');});
