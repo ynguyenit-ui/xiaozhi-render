@@ -124,3 +124,15 @@ Giới hạn mặc định: 2 luồng chuyển mã đồng thời, mỗi luồng
 Dùng `/search?song=Sóng%20Gió&source=zingmp3` hoặc nói “mở bài Sóng Gió trên Zing MP3”. Yêu cầu có nguồn Zing sẽ chỉ thử Zing, để không trả nhầm kết quả từ nguồn khác. Tìm nhạc thông thường vẫn giữ thứ tự nguồn cũ.
 
 Dùng `/candidates?song=Sóng%20Gió&source=zingmp3` để xem bài tìm được, ca sĩ và khả năng phát. `playable=false` với `reason=region_restricted` và `code=-1110` nghĩa là Zing tìm thấy bài nhưng không cho host hiện tại lấy âm thanh. `no_public_128` nghĩa là không có luồng 128 kbps công khai. Không trả bài bị hạn chế như một kết quả có thể nghe được.
+
+
+## Nguồn âm thanh công khai mở rộng
+
+Host giữ nguyên giao thức JSON và âm thanh MP3 128 kbps cho firmware hiện tại. NhạcCủaTui tiếp tục là nguồn mặc định; ccMixter và Wikimedia Commons bổ sung vào nhóm dự phòng cùng Audius và Internet Archive. Không cần tài khoản hay API key cho hai nguồn mới.
+
+- Thử `a night flight trên ccMixter`, hoặc `/search?song=a%20night%20flight&source=ccmixter`.
+- Thử `/candidates?song=Moonlight&source=commons` để xem kết quả Commons.
+- `source=open` chỉ tìm nhóm nguồn mở. JSON trả thêm license, license_url và attribution_url khi nguồn cung cấp.
+- Nguồn mở không đảm bảo có bài nhạc Việt thương mại; host vẫn so khớp tên bài và ca sĩ, không tự thay bằng bài khác.
+- Chỉ nhận MP3 trực tiếp từ ccMixter và tệp âm thanh công khai trên Wikimedia Commons. Luồng tải về được kiểm tra và chuyển sang MP3 128 kbps bằng ffmpeg.
+- Openverse chưa được bật vì API trả 403 trong môi trường thử. Zing vẫn bị hạn chế vùng với các bài đã thử trên Render Singapore; thêm nguồn khác không khắc phục quyền phát Zing.

@@ -271,7 +271,9 @@ const server = http.createServer(async (req,res) => {
         const {playable_tracks,...report}=await searchZingReport(request.song,request.artist);
         return json(res,200,report);
       }
-      return json(res,200,await searchWeb(song,artist));
+      const report=await searchWeb(request.song,request.artist);
+      const selectedSite=request.preferred==='ccmixter'?'ccMixter':request.preferred==='commons'?'Wikimedia Commons':'';
+      return json(res,200,selectedSite?{...report,candidates:report.candidates.filter(t=>t.site===selectedSite),errors:report.errors.filter(e=>e.site===selectedSite)}:report);
     }
     if (['/stream_pcm','/search'].includes(u.pathname)) {
       const podcastQuery=parsePodcastRequest(u.searchParams.get('song') || '',u.searchParams.get('source') || u.searchParams.get('site') || '');
@@ -303,7 +305,7 @@ const server = http.createServer(async (req,res) => {
         const metadata=job.state==='ready'?job.track:job.metadata;
         const p='/audio?'+new URLSearchParams({provider:'job',id:job.id,format:'mp3'});
         console.log('[AUDIO URL SENT]',JSON.stringify({song,elapsed_ms:Date.now()-searchStarted,async:true,job:job.id}));
-        return json(res,200,{title:metadata.title || song,artist:metadata.artist || artist,audio_url:p,audio_full_url:base?base+p:p,m3u8_url:'',lyric_url:'',cover_url:'',duration:metadata.duration || 0,from_cache:job.state==='ready',source_page:metadata.source_page || '',site:metadata.site || metadata.provider,ip:'',preparing:job.state==='pending'});
+        return json(res,200,{title:metadata.title || song,artist:metadata.artist || artist,audio_url:p,audio_full_url:base?base+p:p,m3u8_url:'',lyric_url:'',cover_url:'',duration:metadata.duration || 0,from_cache:job.state==='ready',source_page:metadata.source_page || '',site:metadata.site || metadata.provider,license:metadata.license || '',license_url:metadata.license_url || '',attribution_url:metadata.attribution_url || '',ip:'',preparing:job.state==='pending'});
       }
       const track = await resolveTrack(song,artist,preferred);
       if (!track) return json(res,404,{error:'Không tìm thấy bài khớp. Thêm bài vào catalog.json hoặc thử tên khác.',title:song,artist});
@@ -324,7 +326,7 @@ const server = http.createServer(async (req,res) => {
       if(res.destroyed)return;
       console.log('[AUDIO URL SENT]',JSON.stringify({song,elapsed_ms:Date.now()-searchStarted,early:process.env.EARLY_AUDIO_URL !== 'false'}));
       const p = audioPath(track);
-      return json(res,200,{title:track.title,artist:track.artist,audio_url:p,audio_full_url:base ? base+p : p,m3u8_url:'',lyric_url:'',cover_url:'',duration:track.duration || 0,from_cache:track.provider==='catalog' || !!track.from_cache,source_page:track.source_page || '',site:track.site || track.provider,ip:''});
+      return json(res,200,{title:track.title,artist:track.artist,audio_url:p,audio_full_url:base ? base+p : p,m3u8_url:'',lyric_url:'',cover_url:'',duration:track.duration || 0,from_cache:track.provider==='catalog' || !!track.from_cache,source_page:track.source_page || '',site:track.site || track.provider,license:track.license || '',license_url:track.license_url || '',attribution_url:track.attribution_url || '',ip:''});
     }
     if (u.pathname === '/audio') {
       const id = u.searchParams.get('id'), provider = u.searchParams.get('provider'), format = u.searchParams.get('format') || 'mp3';

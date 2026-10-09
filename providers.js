@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zingPackage from 'mp3-api';
+import { searchCCMixter, searchCommons, openAudioURL } from './open-sources.js';
 const ZingMp3 = zingPackage.ZingMp3;
 export const normalize = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[đĐ]/g,'d').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 function setting(name, fallback, min, max) {
@@ -13,13 +14,17 @@ function setting(name, fallback, min, max) {
 export function parseMusicRequest(song, artist = '', source = '') {
   let title = String(song || '').trim();
   let preferred = /^(youtube|yt|youtube\.com)$/i.test(source) ? 'youtube' : /^(zing|zing\s*mp3|zingmp3\.vn)$/i.test(source) ? 'zingmp3' : '';
+  if (/^(open|nguonmo|ccmixter|commons|wikimedia)$/i.test(source)) preferred=source.toLowerCase()==='ccmixter'?'ccmixter':/^(commons|wikimedia)$/i.test(source)?'commons':'open';
+  const openSuffix=/\s+(?:trên|tren|từ|tu|on|from)\s+(ccmixter|wikimedia(?: commons)?|nguồn mở|nguon mo)\s*[.!?]*$/i;
+  const openMatch=title.match(openSuffix);
+  if(openMatch){preferred=/ccmixter/i.test(openMatch[1])?'ccmixter':/wikimedia/i.test(openMatch[1])?'commons':'open';title=title.replace(openSuffix,'').trim();}
   const suffix = /\s+(?:trên|tren|từ|tu|on|from)\s+youtube(?:\.com)?\s*[.!?]*$/i;
   const prefix = /^youtube(?:\.com)?\s*:\s*/i;
   const zingSuffix = /\s+(?:trên|tren|từ|tu|on|from)\s+zing(?:\s*mp3|mp3\.vn)?\s*[.!?]*$/i;
   const zingPrefix = /^zing(?:\s*mp3|mp3\.vn)?\s*:\s*/i;
   const hasZingQualifier = zingSuffix.test(title) || zingPrefix.test(title);
-  const hasQualifier = hasZingQualifier || suffix.test(title) || prefix.test(title);
-  if (hasQualifier) {
+  const hasQualifier = !!openMatch || hasZingQualifier || suffix.test(title) || prefix.test(title);
+  if (hasQualifier && !openMatch) {
     preferred = hasZingQualifier ? 'zingmp3' : 'youtube';
     title = hasZingQualifier ? title.replace(zingSuffix, '').replace(zingPrefix, '').trim() : title.replace(suffix, '').replace(prefix, '').trim();
   }
@@ -29,7 +34,7 @@ export function parseMusicRequest(song, artist = '', source = '') {
   title = title.replace(command, '').trim();
   return { song: title, artist: String(artist || '').trim(), preferred };
 }
-const domains=['youtube.com','zingmp3.vn','nhaccuatui.com','audius.co','archive.org','soundcloud.com'];
+const domains=['youtube.com','zingmp3.vn','nhaccuatui.com','audius.co','archive.org','soundcloud.com','ccmixter.org','upload.wikimedia.org'];
 export function allowedPage(page) {
   try {const u=new URL(page);return u.protocol==='https:' && !u.username && !u.password && (!u.port || u.port==='443') && domains.some(d=>u.hostname===d || u.hostname.endsWith('.'+d));}catch{return false;}
 }
@@ -261,10 +266,13 @@ export async function searchZing(song,artist=''){
   return (await searchZingReport(song,artist)).playable_tracks;
 }
 function musicOrder(preferred,skipNCT=false){
+  if(preferred==='ccmixter')return ['ccMixter'];
+  if(preferred==='commons')return ['Wikimedia Commons'];
+  if(preferred==='open')return ['Nguồn mở'];
   if(preferred==='zingmp3')return process.env.ENABLE_ZINGMP3==='false'?[]:['ZingMP3'];
   const defaults=process.env.DEFAULT_MUSIC_SOURCE || 'nhaccuatui';
   const first=preferred==='youtube'?'YouTube':defaults==='soundcloud'?'SoundCloud':defaults==='youtube'?'YouTube':'NhạcCủaTui';
-  return [first,...['NhạcCủaTui','YouTube','SoundCloud','Audius / Internet Archive','ZingMP3'].filter(x=>x!==first)]
+  return [first,...['NhạcCủaTui','YouTube','SoundCloud','Nguồn mở','ZingMP3'].filter(x=>x!==first)]
     .filter(x=>x!=='NhạcCủaTui' || (!skipNCT && process.env.ENABLE_NCT!=='false'));
 }
 async function getJSON(url) {
@@ -508,6 +516,8 @@ function extractUncached(target, flat = false) {
 }
 export async function webAudio(page) {
   if(!allowedPage(page))throw Error('Unsupported source');const u=new URL(page);
+  if(openAudioURL(page))return {url:page};
+  if(['ccmixter.org','upload.wikimedia.org'].includes(u.hostname))throw Error('Unsupported open audio URL');
   if(u.hostname==='zingmp3.vn')return zingAudio(page);
   if(u.hostname==='archive.org' && /^\/download\/[^/]+\/.+\.mp3$/i.test(u.pathname))return {url:page};
   if(u.hostname==='audius.co' && /^\/tracks\/[A-Za-z0-9_-]+$/.test(u.pathname))return {url:audioURL(u.pathname.split('/').at(-1))};
@@ -518,15 +528,15 @@ export async function webAudio(page) {
 export async function searchWeb(song,artist='') {
   const key=normalize(song)+'|'+normalize(artist);
   const cached=searchCache.get(key);if(cached && cached.expires>Date.now())return cached.result;
-  const outcomes=await Promise.allSettled([searchAudius(song,artist),searchArchive(song,artist)]), candidates=[],errors=[];
+  const outcomes=await Promise.allSettled([searchAudius(song,artist),searchArchive(song,artist),searchCCMixter(song,artist),searchCommons(song,artist)]), candidates=[],errors=[];
   for(let i=0;i<outcomes.length;i++) {
-    const r=outcomes[i];if(r.status==='fulfilled')candidates.push(...r.value);else errors.push({site:i===0?'Audius':'Internet Archive',error:r.reason.message});
+    const r=outcomes[i];if(r.status==='fulfilled')candidates.push(...r.value);else errors.push({site:['Audius','Internet Archive','ccMixter','Wikimedia Commons'][i],error:r.reason.message});
   }
   // Optional: YouTube was blocked on this user's Render service, so default off.
   if(process.env.KEYLESS_YOUTUBE==='true') {
     try{const d=await extract('ytsearch8:'+[song,artist].filter(Boolean).join(' '),true);for(const t of d.entries || [])candidates.push({title:t.title,artist:t.uploader || t.channel || '',duration:t.duration,provider:'web',site:'YouTube',source_page:'https://www.youtube.com/watch?v='+t.id});}catch(e){errors.push({site:'YouTube',error:e.message});}
   }
-  const result={search_mode:'keyless-audius-archive',candidates:rank([...new Map(candidates.map(t=>[t.source_page,t])).values()],song,artist),errors};
+  const result={search_mode:'public-audius-archive-ccmixter-commons',candidates:rank([...new Map(candidates.map(t=>[t.source_page,t])).values()],song,artist),errors};
   if(!errors.length){if(searchCache.size>=100)searchCache.delete(searchCache.keys().next().value);searchCache.set(key,{result,expires:Date.now()+300000});}
   return result;
 }
@@ -636,10 +646,12 @@ async function resolveFresh({ song, artist, preferred, skipNCT }) {
     SoundCloud: () => searchSoundCloud(song, artist),
     YouTube: () => searchYouTubeAPI(song, artist),
     ZingMP3: () => searchZing(song,artist),
-    'Audius / Internet Archive': async () => {
+    ccMixter: async()=>rank(await searchCCMixter(song,artist),song,artist),
+    'Wikimedia Commons': async()=>rank(await searchCommons(song,artist),song,artist),
+    'Nguồn mở': async () => {
       const r = await searchWeb(song, artist);
       errors.push(...r.errors);
-      return r.candidates.filter(t => t.site === 'Audius' || t.site === 'Internet Archive');
+      return r.candidates.filter(t => ['Audius','Internet Archive','ccMixter','Wikimedia Commons'].includes(t.site));
     }
   };
   function start(site) {
@@ -714,9 +726,11 @@ export async function searchMusicMetadata(song, artist='', options={}) {
     YouTube:()=>searchYouTubeAPI(request.song,request.artist),
     SoundCloud:()=>searchSoundCloud(request.song,request.artist),
     ZingMP3:()=>searchZing(request.song,request.artist),
-    'Audius / Internet Archive':async()=>{
+    ccMixter:async()=>rank(await searchCCMixter(request.song,request.artist),request.song,request.artist),
+    'Wikimedia Commons':async()=>rank(await searchCommons(request.song,request.artist),request.song,request.artist),
+    'Nguồn mở':async()=>{
       const result=await searchWeb(request.song,request.artist);
-      return result.candidates.filter(t=>t.site==='Audius' || t.site==='Internet Archive');
+      return result.candidates.filter(t=>['Audius','Internet Archive','ccMixter','Wikimedia Commons'].includes(t.site));
     }
   };
   const pending=new Map();
