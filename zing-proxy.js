@@ -19,7 +19,8 @@ export function createZingTransport(proxyURL, fetchImpl=proxyFetch, Agent=ProxyA
         throw Error('Zing proxy request failed: '+(code || 'CONNECTION_FAILED'));
       }
     },
-    close:()=>agent.close()
+    close:()=>agent.close(),
+    destroy:()=>agent.destroy()
   };
 }
 let transport;

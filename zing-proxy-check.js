@@ -2,9 +2,11 @@ import zingPackage from 'mp3-api';
 import { createZingTransport, configureZingProxyClient } from './zing-proxy.js';
 
 export const proxyChecks={state:'disabled',results:[]};
-export async function checkZingProxy(proxyURL) {
+export async function checkZingProxy(proxyURL,timeoutMs=25000) {
   const row={proxy:proxyURL,stage:'session',playable:false};
   const transport=createZingTransport(proxyURL);
+  let timer;
+  const work=(async()=>{
   try {
     const client=Object.assign(Object.create(Object.getPrototypeOf(zingPackage.ZingMp3)),zingPackage.ZingMp3);
     configureZingProxyClient(client,transport);
@@ -29,7 +31,16 @@ export async function checkZingProxy(proxyURL) {
     row.playable=r.ok && /^audio\//i.test(row.content_type || '') && row.bytes>0;
     return row;
   } catch(error) { row.error=error.message;return row; }
-  finally { await transport.close(); }
+  finally { await transport.destroy(); }
+  })();
+  try {
+    return await Promise.race([work,new Promise(resolve=>{
+      timer=setTimeout(()=>{
+        void transport.destroy().catch(()=>{});
+        resolve({...row,error:'PROXY_CHECK_TIMEOUT'});
+      },timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
 }
 
 // Explicit, one-time diagnostics at startup; never modifies the active proxy.
