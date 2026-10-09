@@ -1,4 +1,29 @@
 // Public provider APIs; audio always passes the host's probe and MP3 encoder.
+import https from 'node:https';
+import { Readable } from 'node:stream';
+export function ccMixterFetch(url, options={}, redirects=0) {
+  const u=new URL(url);
+  if(u.protocol!=='https:' || u.hostname!=='ccmixter.org' || u.username || u.password || u.port ||
+    !(u.pathname==='/api/query' || /^\/content\/.+\.mp3$/i.test(u.pathname)))return Promise.reject(Error('Unsupported ccMixter URL'));
+  return new Promise((resolve,reject)=>{
+    // ccMixter sends a large response-header block. Bound it to 64 KiB.
+    const request=https.get(u,{maxHeaderSize:65536,signal:options.signal,
+      headers:{...Object.fromEntries(new Headers(options.headers)), 'Accept-Encoding':'identity'}},response=>{
+      const code=response.statusCode || 502;
+      if([301,302,303,307,308].includes(code) && response.headers.location){
+        response.resume();
+        if(redirects>=3)return reject(Error('Too many ccMixter redirects'));
+        ccMixterFetch(new URL(response.headers.location,u),options,redirects+1).then(resolve,reject);return;
+      }
+      const headers=new Headers();
+      for(const name of ['content-type','content-length','content-range'])if(response.headers[name])headers.set(name,String(response.headers[name]));
+      const body=[204,205,304].includes(code)?null:Readable.toWeb(response);
+      if(!body)response.resume();
+      resolve(new Response(body,{status:code,headers}));
+    });
+    request.on('error',reject);
+  });
+}
 const plain = value => String(value || '').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').trim().slice(0,400);
 export function openAudioURL(value) {
   try {
@@ -9,7 +34,8 @@ export function openAudioURL(value) {
   } catch { return false; }
 }
 async function readJSON(url) {
-  const r = await fetch(url, { headers: { Accept:'application/json', 'User-Agent':'XiaozhiMusicHost/1.0 (public audio search)' }, signal:AbortSignal.timeout(6500) });
+  const transport=new URL(url).hostname==='ccmixter.org'?ccMixterFetch:fetch;
+  const r = await transport(url, { headers: { Accept:'application/json', 'User-Agent':'XiaozhiMusicHost/1.0 (public audio search)' }, signal:AbortSignal.timeout(6500) });
   if (!r.ok) throw Error('HTTP '+r.status);
   return r.json();
 }
