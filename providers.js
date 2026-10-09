@@ -12,13 +12,16 @@ function setting(name, fallback, min, max) {
 }
 export function parseMusicRequest(song, artist = '', source = '') {
   let title = String(song || '').trim();
-  let preferred = /^(youtube|yt|youtube\.com)$/i.test(source) ? 'youtube' : '';
+  let preferred = /^(youtube|yt|youtube\.com)$/i.test(source) ? 'youtube' : /^(zing|zing\s*mp3|zingmp3\.vn)$/i.test(source) ? 'zingmp3' : '';
   const suffix = /\s+(?:trên|tren|từ|tu|on|from)\s+youtube(?:\.com)?\s*[.!?]*$/i;
   const prefix = /^youtube(?:\.com)?\s*:\s*/i;
-  const hasQualifier = suffix.test(title) || prefix.test(title);
+  const zingSuffix = /\s+(?:trên|tren|từ|tu|on|from)\s+zing(?:\s*mp3|mp3\.vn)?\s*[.!?]*$/i;
+  const zingPrefix = /^zing(?:\s*mp3|mp3\.vn)?\s*:\s*/i;
+  const hasZingQualifier = zingSuffix.test(title) || zingPrefix.test(title);
+  const hasQualifier = hasZingQualifier || suffix.test(title) || prefix.test(title);
   if (hasQualifier) {
-    preferred = 'youtube';
-    title = title.replace(suffix, '').replace(prefix, '').trim();
+    preferred = hasZingQualifier ? 'zingmp3' : 'youtube';
+    title = hasZingQualifier ? title.replace(zingSuffix, '').replace(zingPrefix, '').trim() : title.replace(suffix, '').replace(prefix, '').trim();
   }
   const command = hasQualifier
     ? /^(?:hãy\s+)?(?:tìm kiếm|tim kiem|tìm|tim|kiếm|kiem|phát|phat|mở|mo)(?:\s+(?:bài hát|bai hat|bài|bai|nhạc|nhac))?\s+/i
@@ -198,8 +201,9 @@ async function zingAudio(page){
     ZingMp3.CTIME=String(Math.floor(Date.now()/1000));
     const response=await zingTimeout(()=>ZingMp3.getSong(id),6000,'Zing stream check timed out');
     if(!hasPublicZing128(response)){
-      if(Number(response?.err)===-1110)blockedUntil.set('ZingMP3',Date.now()+1800000);
-      throw Error('Zing track has no public 128 kbps stream');
+      const reason=zingStreamStatus(response);
+      console.warn('[ZING STREAM]',JSON.stringify({id,code:reason.code,reason:reason.reason}));
+      throw Error('Zing track has no public 128 kbps stream: '+reason.reason);
     }
     cacheZingStream(id,response);
     cached=zingStreamCache.get(id);
@@ -216,44 +220,48 @@ function zingCandidate(song){
   return {title:String(song.title || ''),artist:String(song.artistsNames || (song.artists || []).map(a=>a.name).filter(Boolean).join(', ')),
     duration:Number(song.duration)||0,provider:'web',site:'ZingMP3',source_page:page.href,zing_id:id};
 }
-// Chỉ giữ bài khi API trả được URL 128 kbps công khai; không dùng cookie tài khoản.
-export async function searchZing(song,artist=''){
-  if(process.env.ENABLE_ZINGMP3==='false')return [];
+export function zingStreamStatus(response){
+  const code=response?.err ?? null;
+  if(hasPublicZing128(response))return {playable:true,code,reason:'available'};
+  if(Number(code)===-1110)return {playable:false,code,reason:'region_restricted'};
+  if(![0,'0'].includes(code))return {playable:false,code,reason:'provider_error'};
+  return {playable:false,code,reason:'no_public_128'};
+}
+// Metadata được giữ để phân biệt tìm thấy bài và lấy được âm thanh.
+export async function searchZingReport(song,artist=''){
+  if(process.env.ENABLE_ZINGMP3==='false')return {search_mode:'zingmp3',candidates:[],playable_tracks:[],errors:[{site:'ZingMP3',error:'disabled'}]};
   const key=normalize(song)+'|'+normalize(artist),cached=zingSearchCache.get(key);
-  if(cached && cached.expires>Date.now())return cached.tracks;
+  if(cached && cached.expires>Date.now())return cached.report;
   if(zingSearchPending.has(key))return zingSearchPending.get(key);
   const task=(async()=>{
     const query=[song,artist].filter(Boolean).join(' ').slice(0,200);
     ZingMp3.CTIME=String(Math.floor(Date.now()/1000));
     const response=await zingTimeout(()=>ZingMp3.search(query),7000,'Zing search timed out');
-    if(Number(response?.err)!==0)throw Error('Zing search API unavailable');
-    const candidates=rank((response.data?.songs || []).map(zingCandidate).filter(Boolean),song,artist).slice(0,3);
-    let tracks=[];
-    if(candidates.length){
-      // Lưu ngắn hạn luồng 128 công khai; khi hết hạn sẽ xác nhận lại qua API.
-      ZingMp3.CTIME=String(Math.floor(Date.now()/1000));
-      const checks=await Promise.all(candidates.map(candidate=>zingTimeout(
-        ()=>ZingMp3.getSong(candidate.zing_id),6000,'Zing stream check timed out').catch(error=>({error}))));
-      tracks=candidates.filter((_,index)=>hasPublicZing128(checks[index]));
-      candidates.forEach((candidate,index)=>cacheZingStream(candidate.zing_id,checks[index]));
-      if(!tracks.length && checks.length && checks.every(result=>Number(result?.err)===-1110)){
-        blockedUntil.set('ZingMP3',Date.now()+1800000);
-        console.warn('[SOURCE REGION BLOCKED] ZingMP3 unavailable from this host; cooling down for 30 minutes');
-      }
-    }
+    if(![0,'0'].includes(response?.err))throw Error('Zing search API unavailable');
+    const ranked=rank((response.data?.songs || []).map(zingCandidate).filter(Boolean),song,artist).slice(0,3);
+    ZingMp3.CTIME=String(Math.floor(Date.now()/1000));
+    const checks=await Promise.all(ranked.map(candidate=>zingTimeout(
+      ()=>ZingMp3.getSong(candidate.zing_id),6000,'Zing stream check timed out').catch(()=>({failed:true}))));
+    const candidates=ranked.map((candidate,index)=>({...candidate,...(checks[index].failed?
+      {playable:false,code:null,reason:'stream_check_failed'}:zingStreamStatus(checks[index]))}));
+    ranked.forEach((candidate,index)=>cacheZingStream(candidate.zing_id,checks[index]));
+    const playable_tracks=ranked.filter((_,index)=>candidates[index].playable);
+    const report={search_mode:'zingmp3',candidates,playable_tracks,errors:[]};
     if(zingSearchCache.size>=100)zingSearchCache.delete(zingSearchCache.keys().next().value);
-    zingSearchCache.set(key,{tracks,expires:Date.now()+(tracks.length?300000:15000)});
-    console.log('[ZING SEARCH]',JSON.stringify({song,matched:tracks.length,checked:candidates.length}));
-    return tracks;
+    zingSearchCache.set(key,{report,expires:Date.now()+(playable_tracks.length?60000:15000)});
+    // Giới hạn quyền của một bài không vô hiệu hoá các bài khác trong nguồn.
+    console.log('[ZING SEARCH]',JSON.stringify({song,found:ranked.length,playable:playable_tracks.length,
+      results:candidates.map(t=>({title:t.title,code:t.code,reason:t.reason}))}));
+    return report;
   })();
   zingSearchPending.set(key,task);
-  try{return await task;}
-  catch(error){
-    blockedUntil.set('ZingMP3',Math.max(blockedUntil.get('ZingMP3') || 0,Date.now()+60000));
-    throw error;
-  }finally{zingSearchPending.delete(key);}
+  try{return await task;}finally{zingSearchPending.delete(key);}
+}
+export async function searchZing(song,artist=''){
+  return (await searchZingReport(song,artist)).playable_tracks;
 }
 function musicOrder(preferred,skipNCT=false){
+  if(preferred==='zingmp3')return process.env.ENABLE_ZINGMP3==='false'?[]:['ZingMP3'];
   const defaults=process.env.DEFAULT_MUSIC_SOURCE || 'nhaccuatui';
   const first=preferred==='youtube'?'YouTube':defaults==='soundcloud'?'SoundCloud':defaults==='youtube'?'YouTube':'NhạcCủaTui';
   return [first,...['NhạcCủaTui','YouTube','SoundCloud','Audius / Internet Archive','ZingMP3'].filter(x=>x!==first)]

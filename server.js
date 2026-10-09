@@ -6,7 +6,7 @@ import { createAudioCache, AUDIO_BITRATE_KBPS } from './audio-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveWeb, webAudio, searchWeb, allowedPage, parseMusicRequest, searchMusicMetadata, nctAudio } from './providers.js';
+import { resolveWeb, webAudio, searchWeb, allowedPage, parseMusicRequest, searchMusicMetadata, searchZingReport, nctAudio } from './providers.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const catalog = JSON.parse(fs.readFileSync(path.join(root, 'catalog.json'), 'utf8'));
@@ -266,6 +266,11 @@ const server = http.createServer(async (req,res) => {
     if (u.pathname === '/candidates') {
       const song=(u.searchParams.get('song') || '').trim(),artist=(u.searchParams.get('artist') || '').trim();
       if(!song || song.length>200 || artist.length>200)return json(res,400,{error:'Invalid song / artist'});
+      const request=parseMusicRequest(song,artist,u.searchParams.get('source') || u.searchParams.get('site') || '');
+      if(request.preferred==='zingmp3'){
+        const {playable_tracks,...report}=await searchZingReport(request.song,request.artist);
+        return json(res,200,report);
+      }
       return json(res,200,await searchWeb(song,artist));
     }
     if (['/stream_pcm','/search'].includes(u.pathname)) {
@@ -287,7 +292,13 @@ const server = http.createServer(async (req,res) => {
       if(mode==='json' && process.env.ASYNC_MUSIC_START!=='false'){
         phase='metadata';
         const job=await musicJob(song,artist,preferred);
-        if(!job)return json(res,404,{error:'Không tìm thấy thông tin bài khớp.',title:song,artist});
+        if(!job){
+          if(preferred==='zingmp3'){
+            const report=await searchZingReport(song,artist);
+            return json(res,404,{error:report.candidates.length?'Tìm thấy bài trên Zing MP3 nhưng chưa có luồng 128 kbps được phép phát từ host này.':'Không tìm thấy bài khớp trên Zing MP3.',title:song,artist,site:'ZingMP3',candidates:report.candidates});
+          }
+          return json(res,404,{error:'Không tìm thấy thông tin bài khớp.',title:song,artist});
+        }
         if(res.destroyed)return;
         const metadata=job.state==='ready'?job.track:job.metadata;
         const p='/audio?'+new URLSearchParams({provider:'job',id:job.id,format:'mp3'});

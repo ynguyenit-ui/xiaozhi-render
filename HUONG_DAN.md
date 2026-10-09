@@ -65,7 +65,7 @@ Xếp hạng: bỏ dấu, khớp từ trong tên bài, kiểm tra tên ca sĩ, c
 
 Xem kết quả và lỗi nguồn bằng `/candidates?song=L%E1%BA%A1c%20Tr%C3%B4i&artist=S%C6%A1n%20T%C3%B9ng%20M-TP`.
 
-YouTube và SoundCloud dùng yt-dlp để lấy nguồn phát. Zing dùng trực tiếp URL 128 kbps do API xác nhận, lưu tối đa 60 giây rồi lấy lại; NhạcCủaTui dùng URL MP3 công khai từ API. Render có thể bị YouTube chặn IP/yêu cầu đăng nhập; Zing có thể trả lỗi không khả dụng theo quốc gia của máy chủ. Khi toàn bộ ứng viên Zing báo lỗi quốc gia, host nghỉ nguồn Zing 30 phút để các lượt tìm sau không chậm lặp lại. Không tự vượt bước đăng nhập, giới hạn vùng, VIP hay DRM. Zing được thử từ môi trường kiểm tra; các bài mẫu trả lỗi khóa quốc gia nên chưa xác nhận được phát thực tế.
+YouTube và SoundCloud dùng yt-dlp để lấy nguồn phát. Zing dùng trực tiếp URL 128 kbps do API xác nhận, lưu tối đa 60 giây rồi lấy lại; NhạcCủaTui dùng URL MP3 công khai từ API. Render có thể bị YouTube chặn IP/yêu cầu đăng nhập; Zing có thể trả lỗi không khả dụng theo quốc gia của máy chủ. Lỗi quốc gia của một bài chỉ loại luồng của bài đó; host vẫn tìm được metadata và tiếp tục kiểm tra các bài khác. Không tự vượt bước đăng nhập, giới hạn vùng, VIP hay DRM. Zing được thử từ môi trường kiểm tra; các bài mẫu trả lỗi khóa quốc gia nên chưa xác nhận được phát thực tế.
 
 Tìm nguồn và kiểm tra ứng viên có thể mất vài chục giây: timeout firmware có thể ngắn hơn. Với bài hay nghe, thêm catalog để bỏ qua tìm kiếm. Không bảo đảm nguồn online chạy ổn định 24/7. Có thể tắt bằng ENABLE_WEB_SEARCH=false.
 
@@ -117,3 +117,10 @@ Giới hạn mặc định: 2 luồng chuyển mã đồng thời, mỗi luồng
 * https://api-dashboard.search.brave.com/app/documentation/web-search/get-started
 
 Đã kiểm tra cả 3 chế độ JSON/MP3/PCM bằng file thử local: MP3 mono 24 kHz, PCM 16-bit mono 24 kHz đúng số byte; kiểm tra 404 khi không có bài và logic xếp hạng tên/ca sĩ/phiên bản. Chưa triển khai vào tài khoản Render và chưa kiểm tra thiết bị ESP32-S3 thực tế.
+
+
+## Thử riêng nguồn Zing MP3
+
+Dùng `/search?song=Sóng%20Gió&source=zingmp3` hoặc nói “mở bài Sóng Gió trên Zing MP3”. Yêu cầu có nguồn Zing sẽ chỉ thử Zing, để không trả nhầm kết quả từ nguồn khác. Tìm nhạc thông thường vẫn giữ thứ tự nguồn cũ.
+
+Dùng `/candidates?song=Sóng%20Gió&source=zingmp3` để xem bài tìm được, ca sĩ và khả năng phát. `playable=false` với `reason=region_restricted` và `code=-1110` nghĩa là Zing tìm thấy bài nhưng không cho host hiện tại lấy âm thanh. `no_public_128` nghĩa là không có luồng 128 kbps công khai. Không trả bài bị hạn chế như một kết quả có thể nghe được.
