@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zingPackage from 'mp3-api';
+const ZingMp3 = zingPackage.ZingMp3;
 export const normalize = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[đĐ]/g,'d').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 function setting(name, fallback, min, max) {
   const n = Number(process.env[name]);
@@ -168,10 +170,93 @@ export async function nctAudio(track){
   }
   return {url:selected.nct_source,headers:{Referer:'https://www.nhaccuatui.com/'}};
 }
+const zingSearchCache=new Map(), zingSearchPending=new Map(), zingStreamCache=new Map();
+function zingTimeout(task,ms,message){
+  let timer;
+  return Promise.race([Promise.resolve().then(task),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error(message)),ms);})])
+    .finally(()=>clearTimeout(timer));
+}
+export function hasPublicZing128(response){
+  const value=response?.data?.['128'];
+  if(![0,'0'].includes(response?.err) || typeof value!=='string')return false;
+  try{
+    const u=new URL(value);
+    return u.protocol==='https:' && !u.username && !u.password;
+  }catch{return false;}
+}
+function cacheZingStream(id,response){
+  if(!hasPublicZing128(response))return;
+  if(zingStreamCache.size>=100)zingStreamCache.delete(zingStreamCache.keys().next().value);
+  zingStreamCache.set(id,{url:response.data['128'],expires:Date.now()+60000});
+}
+async function zingAudio(page){
+  const id=new URL(page).pathname.match(/^\/bai-hat\/[^?#]+\/([A-Za-z0-9_-]{6,40})\.html$/)?.[1];
+  if(!id)throw Error('Invalid Zing song page');
+  let cached=zingStreamCache.get(id);
+  if(!cached || cached.expires<=Date.now()){
+    zingStreamCache.delete(id);
+    ZingMp3.CTIME=String(Math.floor(Date.now()/1000));
+    const response=await zingTimeout(()=>ZingMp3.getSong(id),6000,'Zing stream check timed out');
+    if(!hasPublicZing128(response)){
+      if(Number(response?.err)===-1110)blockedUntil.set('ZingMP3',Date.now()+1800000);
+      throw Error('Zing track has no public 128 kbps stream');
+    }
+    cacheZingStream(id,response);
+    cached=zingStreamCache.get(id);
+  }
+  return {url:cached.url,headers:{Referer:'https://zingmp3.vn/'}};
+}
+function zingCandidate(song){
+  const id=String(song?.encodeId || '');
+  if(!/^[A-Za-z0-9_-]{6,40}$/.test(id) || song?.isPrivate===true)return null;
+  let page;
+  try{page=new URL(song.link || '', 'https://zingmp3.vn');}catch{return null;}
+  if(page.protocol!=='https:' || page.hostname!=='zingmp3.vn' ||
+    !/^\/bai-hat\/[^?#]+\/[A-Za-z0-9_-]{6,40}\.html$/.test(page.pathname) || !allowedPage(page.href))return null;
+  return {title:String(song.title || ''),artist:String(song.artistsNames || (song.artists || []).map(a=>a.name).filter(Boolean).join(', ')),
+    duration:Number(song.duration)||0,provider:'web',site:'ZingMP3',source_page:page.href,zing_id:id};
+}
+// Chỉ giữ bài khi API trả được URL 128 kbps công khai; không dùng cookie tài khoản.
+export async function searchZing(song,artist=''){
+  if(process.env.ENABLE_ZINGMP3==='false')return [];
+  const key=normalize(song)+'|'+normalize(artist),cached=zingSearchCache.get(key);
+  if(cached && cached.expires>Date.now())return cached.tracks;
+  if(zingSearchPending.has(key))return zingSearchPending.get(key);
+  const task=(async()=>{
+    const query=[song,artist].filter(Boolean).join(' ').slice(0,200);
+    ZingMp3.CTIME=String(Math.floor(Date.now()/1000));
+    const response=await zingTimeout(()=>ZingMp3.search(query),7000,'Zing search timed out');
+    if(Number(response?.err)!==0)throw Error('Zing search API unavailable');
+    const candidates=rank((response.data?.songs || []).map(zingCandidate).filter(Boolean),song,artist).slice(0,3);
+    let tracks=[];
+    if(candidates.length){
+      // Lưu ngắn hạn luồng 128 công khai; khi hết hạn sẽ xác nhận lại qua API.
+      ZingMp3.CTIME=String(Math.floor(Date.now()/1000));
+      const checks=await Promise.all(candidates.map(candidate=>zingTimeout(
+        ()=>ZingMp3.getSong(candidate.zing_id),6000,'Zing stream check timed out').catch(error=>({error}))));
+      tracks=candidates.filter((_,index)=>hasPublicZing128(checks[index]));
+      candidates.forEach((candidate,index)=>cacheZingStream(candidate.zing_id,checks[index]));
+      if(!tracks.length && checks.length && checks.every(result=>Number(result?.err)===-1110)){
+        blockedUntil.set('ZingMP3',Date.now()+1800000);
+        console.warn('[SOURCE REGION BLOCKED] ZingMP3 unavailable from this host; cooling down for 30 minutes');
+      }
+    }
+    if(zingSearchCache.size>=100)zingSearchCache.delete(zingSearchCache.keys().next().value);
+    zingSearchCache.set(key,{tracks,expires:Date.now()+(tracks.length?300000:15000)});
+    console.log('[ZING SEARCH]',JSON.stringify({song,matched:tracks.length,checked:candidates.length}));
+    return tracks;
+  })();
+  zingSearchPending.set(key,task);
+  try{return await task;}
+  catch(error){
+    blockedUntil.set('ZingMP3',Math.max(blockedUntil.get('ZingMP3') || 0,Date.now()+60000));
+    throw error;
+  }finally{zingSearchPending.delete(key);}
+}
 function musicOrder(preferred,skipNCT=false){
   const defaults=process.env.DEFAULT_MUSIC_SOURCE || 'nhaccuatui';
   const first=preferred==='youtube'?'YouTube':defaults==='soundcloud'?'SoundCloud':defaults==='youtube'?'YouTube':'NhạcCủaTui';
-  return [first,...['NhạcCủaTui','YouTube','SoundCloud','Audius / Internet Archive'].filter(x=>x!==first)]
+  return [first,...['NhạcCủaTui','YouTube','SoundCloud','Audius / Internet Archive','ZingMP3'].filter(x=>x!==first)]
     .filter(x=>x!=='NhạcCủaTui' || (!skipNCT && process.env.ENABLE_NCT!=='false'));
 }
 async function getJSON(url) {
@@ -415,6 +500,7 @@ function extractUncached(target, flat = false) {
 }
 export async function webAudio(page) {
   if(!allowedPage(page))throw Error('Unsupported source');const u=new URL(page);
+  if(u.hostname==='zingmp3.vn')return zingAudio(page);
   if(u.hostname==='archive.org' && /^\/download\/[^/]+\/.+\.mp3$/i.test(u.pathname))return {url:page};
   if(u.hostname==='audius.co' && /^\/tracks\/[A-Za-z0-9_-]+$/.test(u.pathname))return {url:audioURL(u.pathname.split('/').at(-1))};
   const d=await extract(page);
@@ -541,6 +627,7 @@ async function resolveFresh({ song, artist, preferred, skipNCT }) {
     'NhạcCủaTui': () => searchNCT(song,artist),
     SoundCloud: () => searchSoundCloud(song, artist),
     YouTube: () => searchYouTubeAPI(song, artist),
+    ZingMP3: () => searchZing(song,artist),
     'Audius / Internet Archive': async () => {
       const r = await searchWeb(song, artist);
       errors.push(...r.errors);
@@ -565,8 +652,9 @@ async function resolveFresh({ song, artist, preferred, skipNCT }) {
   for (const site of order) {
     if (site === 'SoundCloud' && !enabledSC) continue;
     if (site === 'YouTube' && !enabledYT) continue;
+    if (site === 'ZingMP3' && process.env.ENABLE_ZINGMP3 === 'false') continue;
     if ((blockedUntil.get(site) || 0) > Date.now()) {
-      console.warn('[SOURCE SKIP]', site, 'Temporary cooldown after login/bot block');
+      console.warn('[SOURCE SKIP]', site, 'Temporary cooldown after source error or regional restriction');
       continue;
     }
     const sourceStarted = Date.now();
@@ -617,6 +705,7 @@ export async function searchMusicMetadata(song, artist='', options={}) {
     'NhạcCủaTui':()=>searchNCT(request.song,request.artist),
     YouTube:()=>searchYouTubeAPI(request.song,request.artist),
     SoundCloud:()=>searchSoundCloud(request.song,request.artist),
+    ZingMP3:()=>searchZing(request.song,request.artist),
     'Audius / Internet Archive':async()=>{
       const result=await searchWeb(request.song,request.artist);
       return result.candidates.filter(t=>t.site==='Audius' || t.site==='Internet Archive');
@@ -632,6 +721,7 @@ export async function searchMusicMetadata(song, artist='', options={}) {
   for(const site of order){
     if(site==='YouTube' && process.env.ENABLE_YOUTUBE!=='true')continue;
     if(site==='SoundCloud' && process.env.ENABLE_SOUNDCLOUD==='false')continue;
+    if(site==='ZingMP3' && process.env.ENABLE_ZINGMP3==='false')continue;
     if((blockedUntil.get(site) || 0)>Date.now())continue;
     const outcome=await start(site);
     if(outcome.error){console.warn('[METADATA ERROR]',site,outcome.error.message);continue;}

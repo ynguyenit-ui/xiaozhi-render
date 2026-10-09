@@ -55,17 +55,17 @@ Endpoint `/stream_pcm` có 3 chế độ, tên endpoint không chứng minh dữ
 
 `/search?song=...` luôn trả JSON cho trang nghe thử. `/audio?provider=catalog&id=test&format=mp3` phát bài thử. Sample rate mặc định 24 kHz, MP3 64 kbps; đây là cấu hình ban đầu, không phải thông số đã xác nhận của firmware.
 
-## 3. Tìm kiếm thông minh trên ba nguồn
+## 3. Tìm kiếm thông minh trên nhiều nguồn
 
-Host tìm các trang thuộc zingmp3.vn, nhaccuatui.com, youtube.com qua Brave Search API (cần BRAVE_SEARCH_API_KEY trong Environment). Đăng ký key tại https://api-dashboard.search.brave.com/ và kiểm tra hạn mức/chi phí của gói bạn chọn. Không đưa key vào repository.
+ZingMP3 được tìm trực tiếp bằng client cộng đồng đã ghim phiên bản trong `package-lock.json`; không cần Brave key và không đăng nhập tài khoản. Chỉ giữ ứng viên khi API trả URL HTTPS ở mức `128 kbps`; bài không có mức 128, bị VIP, không có quyền theo vùng hoặc không lấy được luồng sẽ bị bỏ qua. Không lấy 320 kbps làm dự phòng, không dùng cookie tài khoản và không vượt khóa vùng. Zing là nguồn cuối để các nguồn đang chạy được thử trước. Tắt riêng nguồn này bằng `ENABLE_ZINGMP3=false`.
 
-Nếu chưa có key: chỉ có tìm kiếm YouTube bằng yt-dlp; Zing và NhacCuaTui sẽ báo thiếu cấu hình trong /candidates. Đây là tìm kiếm trang công khai được lập chỉ mục, không phải tìm toàn bộ cơ sở dữ liệu nội bộ của từng dịch vụ.
+NhạcCủaTui cũng được tìm qua API công khai, SoundCloud qua yt-dlp, Audius / Internet Archive qua API của từng nguồn. YouTube dùng `YOUTUBE_API_KEY` khi bật `ENABLE_YOUTUBE=true`. Luồng tìm kiếm hiện tại không cần `BRAVE_SEARCH_API_KEY`. Trang `/candidates` chỉ kiểm tra nhóm nguồn trong `searchWeb`; dùng `/search?song=...` để thử luồng tìm kiếm đầy đủ, và xem log `[ZING SEARCH]` khi các nguồn trước không tìm được bài.
 
 Xếp hạng: bỏ dấu, khớp từ trong tên bài, kiểm tra tên ca sĩ, cộng điểm official, trừ điểm remix/cover/karaoke/live khi bạn không yêu cầu. Thử tối đa 3 ứng viên đủ điểm để lấy luồng âm thanh; không tìm được luồng thì báo lỗi, không trả trang web làm audio. Có thể cần thêm aliases trong catalog nếu giọng nói nhận sai nhiều.
 
 Xem kết quả và lỗi nguồn bằng `/candidates?song=L%E1%BA%A1c%20Tr%C3%B4i&artist=S%C6%A1n%20T%C3%B9ng%20M-TP`.
 
-YouTube và Zing có extractor trong yt-dlp. NhacCuaTui dùng extractor generic nên chưa đảm bảo lấy được âm thanh; nếu không hỗ trợ, thêm source_url/file cho bài đó trong catalog. Danh sách hỗ trợ không bảo đảm mọi bài hoạt động. Render có thể bị YouTube chặn IP/yêu cầu đăng nhập; không tự vượt bước đăng nhập, giới hạn vùng, VIP hay DRM. Chỉ xử lý nội dung công khai truy cập được. Các nguồn chưa được thử live trong môi trường này.
+YouTube và SoundCloud dùng yt-dlp để lấy nguồn phát. Zing dùng trực tiếp URL 128 kbps do API xác nhận, lưu tối đa 60 giây rồi lấy lại; NhạcCủaTui dùng URL MP3 công khai từ API. Render có thể bị YouTube chặn IP/yêu cầu đăng nhập; Zing có thể trả lỗi không khả dụng theo quốc gia của máy chủ. Khi toàn bộ ứng viên Zing báo lỗi quốc gia, host nghỉ nguồn Zing 30 phút để các lượt tìm sau không chậm lặp lại. Không tự vượt bước đăng nhập, giới hạn vùng, VIP hay DRM. Zing được thử từ môi trường kiểm tra; các bài mẫu trả lỗi khóa quốc gia nên chưa xác nhận được phát thực tế.
 
 Tìm nguồn và kiểm tra ứng viên có thể mất vài chục giây: timeout firmware có thể ngắn hơn. Với bài hay nghe, thêm catalog để bỏ qua tìm kiếm. Không bảo đảm nguồn online chạy ổn định 24/7. Có thể tắt bằng ENABLE_WEB_SEARCH=false.
 
