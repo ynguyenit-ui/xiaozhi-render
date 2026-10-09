@@ -15,5 +15,7 @@ services:
         value: "false"
       - key: ENABLE_WEB_SEARCH
         value: "true"
+      - key: ENABLE_ZINGMP3
+        value: "true"
       - key: BRAVE_SEARCH_API_KEY
         sync: false

@@ -1,2 +1,6 @@
 youtube_cookies.txt
 *cookies*.txt
+node_modules
+.git
+*.zip
+*.test.js

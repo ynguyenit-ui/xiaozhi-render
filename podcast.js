@@ -1,4 +1,5 @@
 import { searchPodcastRSS } from './podcast-rss.js';
+import { searchNhacPodcast, nhacPodcastURL } from './podcast-nhac.js';
 // Podcast công khai: tìm tập audio qua iTunes, dùng episodeUrl đầy đủ.
 const normalize=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[đĐ]/g,'d').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 const cache=new Map(),pending=new Map();
@@ -6,14 +7,15 @@ export function parsePodcastRequest(song,source=''){
   let query=String(song||'').trim();
   const explicit=/^(podcasts?|padcasts?|spotify)$/i.test(source);
   if(spotifyEpisodeURL(query))return spotifyEpisodeURL(query);
+  if(nhacPodcastURL(query))return nhacPodcastURL(query);
   const keyword=/\b(?:podcasts?|padcasts?)\b/i;
-  if(!explicit && !keyword.test(query))return null;
+  if(!explicit && !keyword.test(query) && !/\b(?:hieu\s*\.?\s*tv|hiếu\s*tv|kể\s+(?:chuyện|truyện)|ke\s+(?:chuyen|truyen)|truyện cổ tích|truyen co tich)\b/i.test(query) && !/^(?:(?:mo|phat|nghe)\s+)?tam cam$/.test(normalize(query)))return null;
   query=query.replace(/\b(?:podcasts?|padcasts?)\b/gi,' ').trim();
   query=query.replace(/^(?:(?:hãy|hay|cho tôi|cho toi|giúp tôi|giup toi)\s+)?(?:(?:mở|mo|phát|phat|nghe|tìm kiếm|tim kiem|tìm|tim|kể|ke)\s+)+/i,'');
   query=query.replace(/^(?:một tập|mot tap|một|mot)\s+/i,'');
   query=query.replace(/^[:\-\s]+/,'').replace(/\s*[:\-]+\s*$/,'');
-  query=query.replace(/^(?:về|ve|about)\s+/i,'').replace(/^(?:chủ đề|chu de)\s+/i,'').replace(/^(?:truyện|truyen|câu chuyện|cau chuyen)\s+/i,'');
-  return query.replace(/\s+/g,' ').trim();
+  query=query.replace(/^(?:về|ve|about)\s+/i,'').replace(/^(?:chủ đề|chu de)\s+/i,'').replace(/^(?:truyện|truyen|chuyện|chuyen|câu chuyện|cau chuyen)\s+/i,'');
+  return query.replace(/\b(?:hiếu\s*tv|hieu\s*\.?\s*tv)\b/gi,'HIEU TV').replace(/\btập\s*(\d+)\b/gi,'$1').replace(/\s+/g,' ').trim();
 }
 function spotifyEpisodeURL(value){
   try{const u=new URL(String(value).trim());return u.protocol==='https:' && u.hostname==='open.spotify.com' && !u.username && !u.password && !u.port && /^\/episode\/[a-zA-Z0-9]{22}\/?$/.test(u.pathname)?'https://open.spotify.com'+u.pathname.replace(/\/$/,''):null;}catch{return null;}
@@ -31,6 +33,12 @@ export async function searchPodcast(query){
   const hit=cache.get(wanted);if(hit && hit.expires>Date.now())return hit.track;
   if(pending.has(wanted))return pending.get(wanted);
   const task=(async()=>{
+    const nhac=await searchNhacPodcast(query);
+    if(nhac){cache.set(wanted,{track:nhac,expires:Date.now()+300000});return nhac;}
+    if(/\bhieu\s*tv\b/.test(wanted)){
+      const track=await searchPodcastRSS(query,[],['https://anchor.fm/s/4cfb55bc/podcast/rss']);
+      cache.set(wanted,{track,expires:Date.now()+(track?300000:15000)});return track;
+    }
     const spotify=spotifyEpisodeURL(query);
     if(spotify){
       const endpoint=new URL('https://open.spotify.com/oembed');endpoint.searchParams.set('url',spotify);

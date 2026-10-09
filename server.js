@@ -1,12 +1,13 @@
 import { searchPodcast, parsePodcastRequest, podcastAudio } from './podcast.js';
+import { proxyChecks, runProxyChecks } from './zing-proxy-check.js';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { createAudioCache, AUDIO_BITRATE_KBPS } from './audio-cache.js';
+import { createAudioCache, AUDIO_BITRATE_KBPS, usesProgressiveAudio } from './audio-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveWeb, webAudio, searchWeb, allowedPage, parseMusicRequest, searchMusicMetadata, nctAudio } from './providers.js';
+import { resolveWeb, webAudio, searchWeb, allowedPage, parseMusicRequest, searchMusicMetadata, searchZingReport, nctAudio } from './providers.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const catalog = JSON.parse(fs.readFileSync(path.join(root, 'catalog.json'), 'utf8'));
@@ -140,18 +141,18 @@ function startMusicJob(job){
     if(!track)throw Error('No playable matching source');
     const prepareStarted=Date.now();
     let entry;
-    try{entry=['nct','podcast'].includes(track.provider)?await audioCache.playable(track):await audioCache.prepare(track,'mp3');}
+    try{entry=usesProgressiveAudio(track)?await audioCache.playable(track):await audioCache.prepare(track,'mp3');}
     catch(error){
       if(track.provider!=='nct')throw error;
       console.warn('[NCT FALLBACK]',error.message);
       track=await resolveTrack(job.song,job.artist,job.preferred,{skipNCT:true});
       if(!track)throw Error('NCT failed and no playable fallback');
-      entry=await audioCache.prepare(track,'mp3');
+      entry=usesProgressiveAudio(track)?await audioCache.playable(track):await audioCache.prepare(track,'mp3');
     }
     return {track,entry,prepare_ms:Date.now()-prepareStarted};
   })();
   job.ready=deadline(work,180000,'Music job timed out').then(result=>{
-    job.state='ready';job.track=result.track;job.entry=result.entry;job.progressive=(result.track.provider==='nct' && process.env.NCT_PROGRESSIVE!=='false') || (result.track.provider==='podcast' && process.env.PODCAST_PROGRESSIVE!=='false');job.expires=Date.now()+1800000;
+    job.state='ready';job.track=result.track;job.entry=result.entry;job.progressive=usesProgressiveAudio(result.track);job.expires=Date.now()+1800000;
     console.log('[PLAY READY]',JSON.stringify({song:job.song,site:result.track.site || result.track.provider,prepare_ms:result.prepare_ms,total_ms:Date.now()-started,job:job.id}));
     return job;
   },error=>{
@@ -261,12 +262,20 @@ const server = http.createServer(async (req,res) => {
     const u = new URL(req.url,'http://localhost');
     if (!['GET','HEAD'].includes(req.method)) return json(res,405,{error:'GET only'});
     if (u.pathname === '/health') return json(res,200,{status:'ok',active_streams:active,mode,sample_rate:rate,audio_bitrate_kbps:AUDIO_BITRATE_KBPS,catalog_tracks:catalog.length});
+    if (u.pathname === '/zing-proxy-check') return json(res,200,proxyChecks);
     if (u.pathname === '/') {res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});return res.end(req.method === 'HEAD' ? '' : page);}
     if (req.method === 'HEAD' && u.pathname !== '/audio') {res.writeHead(405);return res.end();}
     if (u.pathname === '/candidates') {
       const song=(u.searchParams.get('song') || '').trim(),artist=(u.searchParams.get('artist') || '').trim();
       if(!song || song.length>200 || artist.length>200)return json(res,400,{error:'Invalid song / artist'});
-      return json(res,200,await searchWeb(song,artist));
+      const request=parseMusicRequest(song,artist,u.searchParams.get('source') || u.searchParams.get('site') || '');
+      if(request.preferred==='zingmp3'){
+        const {playable_tracks,...report}=await searchZingReport(request.song,request.artist);
+        return json(res,200,report);
+      }
+      const report=await searchWeb(request.song,request.artist);
+      const selectedSite=request.preferred==='ccmixter'?'ccMixter':request.preferred==='commons'?'Wikimedia Commons':'';
+      return json(res,200,selectedSite?{...report,candidates:report.candidates.filter(t=>t.site===selectedSite),errors:report.errors.filter(e=>e.site===selectedSite)}:report);
     }
     if (['/stream_pcm','/search'].includes(u.pathname)) {
       const podcastQuery=parsePodcastRequest(u.searchParams.get('song') || '',u.searchParams.get('source') || u.searchParams.get('site') || '');
@@ -287,12 +296,18 @@ const server = http.createServer(async (req,res) => {
       if(mode==='json' && process.env.ASYNC_MUSIC_START!=='false'){
         phase='metadata';
         const job=await musicJob(song,artist,preferred);
-        if(!job)return json(res,404,{error:'Không tìm thấy thông tin bài khớp.',title:song,artist});
+        if(!job){
+          if(preferred==='zingmp3'){
+            const report=await searchZingReport(song,artist);
+            return json(res,404,{error:report.candidates.length?'Tìm thấy bài trên Zing MP3 nhưng chưa có luồng 128 kbps được phép phát từ host này.':'Không tìm thấy bài khớp trên Zing MP3.',title:song,artist,site:'ZingMP3',candidates:report.candidates});
+          }
+          return json(res,404,{error:'Không tìm thấy thông tin bài khớp.',title:song,artist});
+        }
         if(res.destroyed)return;
         const metadata=job.state==='ready'?job.track:job.metadata;
         const p='/audio?'+new URLSearchParams({provider:'job',id:job.id,format:'mp3'});
         console.log('[AUDIO URL SENT]',JSON.stringify({song,elapsed_ms:Date.now()-searchStarted,async:true,job:job.id}));
-        return json(res,200,{title:metadata.title || song,artist:metadata.artist || artist,audio_url:p,audio_full_url:base?base+p:p,m3u8_url:'',lyric_url:'',cover_url:'',duration:metadata.duration || 0,from_cache:job.state==='ready',source_page:metadata.source_page || '',site:metadata.site || metadata.provider,ip:'',preparing:job.state==='pending'});
+        return json(res,200,{title:metadata.title || song,artist:metadata.artist || artist,audio_url:p,audio_full_url:base?base+p:p,m3u8_url:'',lyric_url:'',cover_url:'',duration:metadata.duration || 0,from_cache:job.state==='ready',source_page:metadata.source_page || '',site:metadata.site || metadata.provider,license:metadata.license || '',license_url:metadata.license_url || '',attribution_url:metadata.attribution_url || '',ip:'',preparing:job.state==='pending'});
       }
       const track = await resolveTrack(song,artist,preferred);
       if (!track) return json(res,404,{error:'Không tìm thấy bài khớp. Thêm bài vào catalog.json hoặc thử tên khác.',title:song,artist});
@@ -313,7 +328,7 @@ const server = http.createServer(async (req,res) => {
       if(res.destroyed)return;
       console.log('[AUDIO URL SENT]',JSON.stringify({song,elapsed_ms:Date.now()-searchStarted,early:process.env.EARLY_AUDIO_URL !== 'false'}));
       const p = audioPath(track);
-      return json(res,200,{title:track.title,artist:track.artist,audio_url:p,audio_full_url:base ? base+p : p,m3u8_url:'',lyric_url:'',cover_url:'',duration:track.duration || 0,from_cache:track.provider==='catalog' || !!track.from_cache,source_page:track.source_page || '',site:track.site || track.provider,ip:''});
+      return json(res,200,{title:track.title,artist:track.artist,audio_url:p,audio_full_url:base ? base+p : p,m3u8_url:'',lyric_url:'',cover_url:'',duration:track.duration || 0,from_cache:track.provider==='catalog' || !!track.from_cache,source_page:track.source_page || '',site:track.site || track.provider,license:track.license || '',license_url:track.license_url || '',attribution_url:track.attribution_url || '',ip:''});
     }
     if (u.pathname === '/audio') {
       const id = u.searchParams.get('id'), provider = u.searchParams.get('provider'), format = u.searchParams.get('format') || 'mp3';
@@ -338,3 +353,4 @@ const server = http.createServer(async (req,res) => {
   } catch(err) {console.error('[REQUEST]',err.message);if(!res.headersSent)json(res,502,{error:'Music search failed; check host logs / Audius configuration'});else res.destroy();}
 });
 server.listen(Number(process.env.PORT || 10000),'0.0.0.0',() => console.log(`Music host listening; mode=${mode}; rate=${rate}; bitrate=${AUDIO_BITRATE_KBPS}kbps`));
+if(process.env.ZING_PROXY_CHECKS)void runProxyChecks(process.env.ZING_PROXY_CHECKS).catch(()=>{proxyChecks.state='failed';console.warn('[ZING PROXY CHECK] Invalid diagnostic configuration');});

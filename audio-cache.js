@@ -1,5 +1,7 @@
-// Cache hoàn chỉnh cho nguồn cũ; NCT có thể phát trong khi ghi cache.
+// NCT, Zing và podcast có thể phát trong khi ghi cache.
 import fs from 'node:fs';
+import { zingFetch } from './zing-proxy.js';
+import { ccMixterFetch } from './open-sources.js';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -12,6 +14,11 @@ function number(name, fallback, min, max) {
 }
 export const AUDIO_BITRATE_KBPS = Number(process.env.AUDIO_BITRATE_KBPS || 128);
 if (![64,128].includes(AUDIO_BITRATE_KBPS)) throw Error('AUDIO_BITRATE_KBPS must be 64 or 128');
+export function usesProgressiveAudio(track) {
+  return (track.provider==='nct' && process.env.NCT_PROGRESSIVE!=='false') ||
+    (track.provider==='podcast' && process.env.PODCAST_PROGRESSIVE!=='false') ||
+    (track.site==='ZingMP3' && process.env.ZING_PROGRESSIVE!=='false');
+}
 export function createAudioCache(sourceFor, rate) {
   const directory = process.env.AUDIO_CACHE_DIR || path.join(os.tmpdir(), 'xiaozhi-audio-v2');
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -48,7 +55,8 @@ export function createAudioCache(sourceFor, rate) {
       const headers = new Headers(source.headers || {});
       headers.delete('range'); headers.set('Accept-Encoding', 'identity');
       if(segmented)headers.set('Range', `bytes=${start}-${end}`);
-      const response = await fetch(source.url, {headers,redirect:'follow',signal:combined});
+      const transport=source.zing_proxy?zingFetch:new URL(source.url).hostname==='ccmixter.org'?ccMixterFetch:fetch;
+      const response = await transport(source.url, {headers,redirect:'follow',signal:combined});
       if(!response.ok || !response.body) {
         await response.body?.cancel();throw Error(`Audio download HTTP ${response.status}`);
       }
@@ -117,7 +125,9 @@ export function createAudioCache(sourceFor, rate) {
     try {
       const source = await sourceFor(track);
       if (controller.signal.aborted) throw Error('Audio preparation timeout');
-      const args = ['-hide_banner','-loglevel','error','-nostdin',...(['nct','podcast'].includes(track.provider)?['-probesize','32768','-analyzeduration','0']:[]),'-i',source.file || 'pipe:0','-t',track.provider==='podcast'?'7200':'900','-vn','-ac','1','-ar',String(rate)];
+      // A fixed music duration closed stdin early for medleys and caused EPIPE.
+      // Keep the existing download, output-size and wall-time limits instead.
+      const args = ['-hide_banner','-loglevel','error','-nostdin',...(usesProgressiveAudio(track)?['-probesize','32768','-analyzeduration','0']:[]),'-i',source.file || 'pipe:0',...(track.provider==='podcast'?['-t','7200']:[]),'-vn','-ac','1','-ar',String(rate)];
       args.push(...(format === 'pcm' ? ['-c:a','pcm_s16le','-f','s16le'] : ['-c:a','libmp3lame','-b:a',`${AUDIO_BITRATE_KBPS}k`,'-write_xing','0','-id3v2_version','0','-write_id3v1','0','-f','mp3']), 'pipe:1');
       child = spawn(process.env.FFMPEG_PATH || 'ffmpeg', args, { stdio: ['pipe','pipe','pipe'] });
       child.stderr.on('data', d => { stderr = (stderr+d).slice(-1000); });
@@ -163,7 +173,7 @@ export function createAudioCache(sourceFor, rate) {
     if (pending.has(key)) return pending.get(key);
     if (cached?.readers) {cached.used=Date.now();return cached;}
     prune();
-    const progressive=(track.provider==='nct' && process.env.NCT_PROGRESSIVE!=='false') || (track.provider==='podcast' && process.env.PODCAST_PROGRESSIVE!=='false');
+    const progressive=usesProgressiveAudio(track);
     const state=progressive && format==='mp3'?{readers:0,done:false}:null;
     if(state)growing.set(key,state);
     const task = build(track,format,key,state).catch(error=>{if(state){state.error=error;state.done=true;}throw error;}); pending.set(key,task);
@@ -176,7 +186,8 @@ export function createAudioCache(sourceFor, rate) {
     complete.catch(()=>{});
     const state=growing.get(keyFor(track,'mp3'));
     if(!state)return complete;
-    const threshold=number(track.provider==='podcast'?'PODCAST_BUFFER_SECONDS':'NCT_BUFFER_SECONDS',8,3,30)*(AUDIO_BITRATE_KBPS*1000/8);
+    const bufferSetting=track.provider==='podcast'?'PODCAST_BUFFER_SECONDS':track.site==='ZingMP3'?'ZING_BUFFER_SECONDS':'NCT_BUFFER_SECONDS';
+    const threshold=number(bufferSetting,8,3,30)*(AUDIO_BITRATE_KBPS*1000/8);
     while(!state.done){
       if(state.file && fs.existsSync(state.file) && fs.statSync(state.file).size>=threshold){
         console.log('[AUDIO BUFFER READY]',JSON.stringify({title:track.title,buffer_seconds:threshold/(AUDIO_BITRATE_KBPS*1000/8),bitrate_kbps:AUDIO_BITRATE_KBPS}));

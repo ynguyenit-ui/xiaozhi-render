@@ -1,8 +1,13 @@
-// NhạcCủaTui MP3 trực tiếp; giữ các nguồn dự phòng.
+// Ưu tiên ZingMP3; giữ NhạcCủaTui và các nguồn dự phòng.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zingPackage from 'mp3-api';
+import { searchCCMixter, searchCommons, openAudioURL, ccMixterFetch } from './open-sources.js';
+import { configureZingProxyClient, zingFetch, zingProxyEnabled } from './zing-proxy.js';
+const ZingMp3 = zingPackage.ZingMp3;
+configureZingProxyClient(ZingMp3);
 export const normalize = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[đĐ]/g,'d').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 function setting(name, fallback, min, max) {
   const n = Number(process.env[name]);
@@ -10,13 +15,20 @@ function setting(name, fallback, min, max) {
 }
 export function parseMusicRequest(song, artist = '', source = '') {
   let title = String(song || '').trim();
-  let preferred = /^(youtube|yt|youtube\.com)$/i.test(source) ? 'youtube' : '';
+  let preferred = /^(youtube|yt|youtube\.com)$/i.test(source) ? 'youtube' : /^(zing|zing\s*mp3|zingmp3\.vn)$/i.test(source) ? 'zingmp3' : '';
+  if (/^(open|nguonmo|ccmixter|commons|wikimedia)$/i.test(source)) preferred=source.toLowerCase()==='ccmixter'?'ccmixter':/^(commons|wikimedia)$/i.test(source)?'commons':'open';
+  const openSuffix=/\s+(?:trên|tren|từ|tu|on|from)\s+(ccmixter|wikimedia(?: commons)?|nguồn mở|nguon mo)\s*[.!?]*$/i;
+  const openMatch=title.match(openSuffix);
+  if(openMatch){preferred=/ccmixter/i.test(openMatch[1])?'ccmixter':/wikimedia/i.test(openMatch[1])?'commons':'open';title=title.replace(openSuffix,'').trim();}
   const suffix = /\s+(?:trên|tren|từ|tu|on|from)\s+youtube(?:\.com)?\s*[.!?]*$/i;
   const prefix = /^youtube(?:\.com)?\s*:\s*/i;
-  const hasQualifier = suffix.test(title) || prefix.test(title);
-  if (hasQualifier) {
-    preferred = 'youtube';
-    title = title.replace(suffix, '').replace(prefix, '').trim();
+  const zingSuffix = /\s+(?:trên|tren|từ|tu|on|from)\s+zing(?:\s*mp3|mp3\.vn)?\s*[.!?]*$/i;
+  const zingPrefix = /^zing(?:\s*mp3|mp3\.vn)?\s*:\s*/i;
+  const hasZingQualifier = zingSuffix.test(title) || zingPrefix.test(title);
+  const hasQualifier = !!openMatch || hasZingQualifier || suffix.test(title) || prefix.test(title);
+  if (hasQualifier && !openMatch) {
+    preferred = hasZingQualifier ? 'zingmp3' : 'youtube';
+    title = hasZingQualifier ? title.replace(zingSuffix, '').replace(zingPrefix, '').trim() : title.replace(suffix, '').replace(prefix, '').trim();
   }
   const command = hasQualifier
     ? /^(?:hãy\s+)?(?:tìm kiếm|tim kiem|tìm|tim|kiếm|kiem|phát|phat|mở|mo)(?:\s+(?:bài hát|bai hat|bài|bai|nhạc|nhac))?\s+/i
@@ -24,7 +36,7 @@ export function parseMusicRequest(song, artist = '', source = '') {
   title = title.replace(command, '').trim();
   return { song: title, artist: String(artist || '').trim(), preferred };
 }
-const domains=['youtube.com','zingmp3.vn','nhaccuatui.com','audius.co','archive.org','soundcloud.com'];
+const domains=['youtube.com','zingmp3.vn','nhaccuatui.com','audius.co','archive.org','soundcloud.com','ccmixter.org','upload.wikimedia.org'];
 export function allowedPage(page) {
   try {const u=new URL(page);return u.protocol==='https:' && !u.username && !u.password && (!u.port || u.port==='443') && domains.some(d=>u.hostname===d || u.hostname.endsWith('.'+d));}catch{return false;}
 }
@@ -168,10 +180,101 @@ export async function nctAudio(track){
   }
   return {url:selected.nct_source,headers:{Referer:'https://www.nhaccuatui.com/'}};
 }
+const zingSearchCache=new Map(), zingSearchPending=new Map(), zingStreamCache=new Map();
+function zingTimeout(task,ms,message){
+  let timer;
+  return Promise.race([Promise.resolve().then(task),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error(message)),ms);})])
+    .finally(()=>clearTimeout(timer));
+}
+export function hasPublicZing128(response){
+  const value=response?.data?.['128'];
+  if(![0,'0'].includes(response?.err) || typeof value!=='string')return false;
+  try{
+    const u=new URL(value);
+    return u.protocol==='https:' && !u.username && !u.password;
+  }catch{return false;}
+}
+function cacheZingStream(id,response){
+  if(!hasPublicZing128(response))return;
+  if(zingStreamCache.size>=100)zingStreamCache.delete(zingStreamCache.keys().next().value);
+  zingStreamCache.set(id,{url:response.data['128'],expires:Date.now()+60000});
+}
+async function zingAudio(page){
+  const id=new URL(page).pathname.match(/^\/bai-hat\/[^?#]+\/([A-Za-z0-9_-]{6,40})\.html$/)?.[1];
+  if(!id)throw Error('Invalid Zing song page');
+  let cached=zingStreamCache.get(id);
+  if(!cached || cached.expires<=Date.now()){
+    zingStreamCache.delete(id);
+    ZingMp3.CTIME=String(Math.floor(Date.now()/1000));
+    const response=await zingTimeout(()=>ZingMp3.getSong(id),6000,'Zing stream check timed out');
+    if(!hasPublicZing128(response)){
+      const reason=zingStreamStatus(response);
+      console.warn('[ZING STREAM]',JSON.stringify({id,code:reason.code,reason:reason.reason}));
+      throw Error('Zing track has no public 128 kbps stream: '+reason.reason);
+    }
+    cacheZingStream(id,response);
+    cached=zingStreamCache.get(id);
+  }
+  return {url:cached.url,headers:{Referer:'https://zingmp3.vn/'},zing_proxy:zingProxyEnabled() && process.env.ZING_PROXY_AUDIO!=='false'};
+}
+function zingCandidate(song){
+  const id=String(song?.encodeId || '');
+  if(!/^[A-Za-z0-9_-]{6,40}$/.test(id) || song?.isPrivate===true)return null;
+  let page;
+  try{page=new URL(song.link || '', 'https://zingmp3.vn');}catch{return null;}
+  if(page.protocol!=='https:' || page.hostname!=='zingmp3.vn' ||
+    !/^\/bai-hat\/[^?#]+\/[A-Za-z0-9_-]{6,40}\.html$/.test(page.pathname) || !allowedPage(page.href))return null;
+  return {title:String(song.title || ''),artist:String(song.artistsNames || (song.artists || []).map(a=>a.name).filter(Boolean).join(', ')),
+    duration:Number(song.duration)||0,provider:'web',site:'ZingMP3',source_page:page.href,zing_id:id};
+}
+export function zingStreamStatus(response){
+  const code=response?.err ?? null;
+  if(hasPublicZing128(response))return {playable:true,code,reason:'available'};
+  if(Number(code)===-1110)return {playable:false,code,reason:'region_restricted'};
+  if(![0,'0'].includes(code))return {playable:false,code,reason:'provider_error'};
+  return {playable:false,code,reason:'no_public_128'};
+}
+// Metadata được giữ để phân biệt tìm thấy bài và lấy được âm thanh.
+export async function searchZingReport(song,artist=''){
+  if(process.env.ENABLE_ZINGMP3==='false')return {search_mode:'zingmp3',candidates:[],playable_tracks:[],errors:[{site:'ZingMP3',error:'disabled'}]};
+  const key=normalize(song)+'|'+normalize(artist),cached=zingSearchCache.get(key);
+  if(cached && cached.expires>Date.now())return cached.report;
+  if(zingSearchPending.has(key))return zingSearchPending.get(key);
+  const task=(async()=>{
+    const query=[song,artist].filter(Boolean).join(' ').slice(0,200);
+    ZingMp3.CTIME=String(Math.floor(Date.now()/1000));
+    const response=await zingTimeout(()=>ZingMp3.search(query),7000,'Zing search timed out');
+    if(![0,'0'].includes(response?.err))throw Error('Zing search API unavailable');
+    const ranked=rank((response.data?.songs || []).map(zingCandidate).filter(Boolean),song,artist).slice(0,3);
+    ZingMp3.CTIME=String(Math.floor(Date.now()/1000));
+    const checks=await Promise.all(ranked.map(candidate=>zingTimeout(
+      ()=>ZingMp3.getSong(candidate.zing_id),6000,'Zing stream check timed out').catch(()=>({failed:true}))));
+    const candidates=ranked.map((candidate,index)=>({...candidate,...(checks[index].failed?
+      {playable:false,code:null,reason:'stream_check_failed'}:zingStreamStatus(checks[index]))}));
+    ranked.forEach((candidate,index)=>cacheZingStream(candidate.zing_id,checks[index]));
+    const playable_tracks=ranked.filter((_,index)=>candidates[index].playable);
+    const report={search_mode:'zingmp3',candidates,playable_tracks,errors:[]};
+    if(zingSearchCache.size>=100)zingSearchCache.delete(zingSearchCache.keys().next().value);
+    zingSearchCache.set(key,{report,expires:Date.now()+(playable_tracks.length?60000:15000)});
+    // Giới hạn quyền của một bài không vô hiệu hoá các bài khác trong nguồn.
+    console.log('[ZING SEARCH]',JSON.stringify({song,found:ranked.length,playable:playable_tracks.length,
+      results:candidates.map(t=>({title:t.title,code:t.code,reason:t.reason}))}));
+    return report;
+  })();
+  zingSearchPending.set(key,task);
+  try{return await task;}finally{zingSearchPending.delete(key);}
+}
+export async function searchZing(song,artist=''){
+  return (await searchZingReport(song,artist)).playable_tracks;
+}
 function musicOrder(preferred,skipNCT=false){
-  const defaults=process.env.DEFAULT_MUSIC_SOURCE || 'nhaccuatui';
-  const first=preferred==='youtube'?'YouTube':defaults==='soundcloud'?'SoundCloud':defaults==='youtube'?'YouTube':'NhạcCủaTui';
-  return [first,...['NhạcCủaTui','YouTube','SoundCloud','Audius / Internet Archive'].filter(x=>x!==first)]
+  if(preferred==='ccmixter')return ['ccMixter'];
+  if(preferred==='commons')return ['Wikimedia Commons'];
+  if(preferred==='open')return ['Nguồn mở'];
+  if(preferred==='zingmp3')return process.env.ENABLE_ZINGMP3==='false'?[]:['ZingMP3'];
+  const defaults=process.env.DEFAULT_MUSIC_SOURCE || 'zingmp3';
+  const first=preferred==='youtube'?'YouTube':defaults==='soundcloud'?'SoundCloud':defaults==='youtube'?'YouTube':defaults==='nhaccuatui'?'NhạcCủaTui':'ZingMP3';
+  return [first,...['ZingMP3','NhạcCủaTui','YouTube','SoundCloud','Nguồn mở'].filter(x=>x!==first)]
     .filter(x=>x!=='NhạcCủaTui' || (!skipNCT && process.env.ENABLE_NCT!=='false'));
 }
 async function getJSON(url) {
@@ -415,6 +518,9 @@ function extractUncached(target, flat = false) {
 }
 export async function webAudio(page) {
   if(!allowedPage(page))throw Error('Unsupported source');const u=new URL(page);
+  if(openAudioURL(page))return {url:page};
+  if(['ccmixter.org','upload.wikimedia.org'].includes(u.hostname))throw Error('Unsupported open audio URL');
+  if(u.hostname==='zingmp3.vn')return zingAudio(page);
   if(u.hostname==='archive.org' && /^\/download\/[^/]+\/.+\.mp3$/i.test(u.pathname))return {url:page};
   if(u.hostname==='audius.co' && /^\/tracks\/[A-Za-z0-9_-]+$/.test(u.pathname))return {url:audioURL(u.pathname.split('/').at(-1))};
   const d=await extract(page);
@@ -424,20 +530,21 @@ export async function webAudio(page) {
 export async function searchWeb(song,artist='') {
   const key=normalize(song)+'|'+normalize(artist);
   const cached=searchCache.get(key);if(cached && cached.expires>Date.now())return cached.result;
-  const outcomes=await Promise.allSettled([searchAudius(song,artist),searchArchive(song,artist)]), candidates=[],errors=[];
+  const outcomes=await Promise.allSettled([searchAudius(song,artist),searchArchive(song,artist),searchCCMixter(song,artist),searchCommons(song,artist)]), candidates=[],errors=[];
   for(let i=0;i<outcomes.length;i++) {
-    const r=outcomes[i];if(r.status==='fulfilled')candidates.push(...r.value);else errors.push({site:i===0?'Audius':'Internet Archive',error:r.reason.message});
+    const r=outcomes[i];if(r.status==='fulfilled')candidates.push(...r.value);else errors.push({site:['Audius','Internet Archive','ccMixter','Wikimedia Commons'][i],error:r.reason.message});
   }
   // Optional: YouTube was blocked on this user's Render service, so default off.
   if(process.env.KEYLESS_YOUTUBE==='true') {
     try{const d=await extract('ytsearch8:'+[song,artist].filter(Boolean).join(' '),true);for(const t of d.entries || [])candidates.push({title:t.title,artist:t.uploader || t.channel || '',duration:t.duration,provider:'web',site:'YouTube',source_page:'https://www.youtube.com/watch?v='+t.id});}catch(e){errors.push({site:'YouTube',error:e.message});}
   }
-  const result={search_mode:'keyless-audius-archive',candidates:rank([...new Map(candidates.map(t=>[t.source_page,t])).values()],song,artist),errors};
+  const result={search_mode:'public-audius-archive-ccmixter-commons',candidates:rank([...new Map(candidates.map(t=>[t.source_page,t])).values()],song,artist),errors};
   if(!errors.length){if(searchCache.size>=100)searchCache.delete(searchCache.keys().next().value);searchCache.set(key,{result,expires:Date.now()+300000});}
   return result;
 }
 async function probeUncached(source) {
-  const r=await fetch(source.url,{headers:{...(source.headers || {}),Range:'bytes=0-1023'},signal:AbortSignal.timeout(setting('AUDIO_PROBE_TIMEOUT_MS', 4000, 1000, 15000)),redirect:'follow'});
+  const transport=source.zing_proxy?zingFetch:new URL(source.url).hostname==='ccmixter.org'?ccMixterFetch:fetch;
+  const r=await transport(source.url,{headers:{...(source.headers || {}),Range:'bytes=0-1023'},signal:AbortSignal.timeout(setting('AUDIO_PROBE_TIMEOUT_MS', 4000, 1000, 15000)),redirect:'follow'});
   const type=r.headers.get('content-type') || '';
   if(!r.ok || !r.body || /json|text\/html/i.test(type)){await r.body?.cancel();throw Error(`Audio unavailable: HTTP ${r.status}`);}
   const reader=r.body.getReader();
@@ -541,10 +648,13 @@ async function resolveFresh({ song, artist, preferred, skipNCT }) {
     'NhạcCủaTui': () => searchNCT(song,artist),
     SoundCloud: () => searchSoundCloud(song, artist),
     YouTube: () => searchYouTubeAPI(song, artist),
-    'Audius / Internet Archive': async () => {
+    ZingMP3: () => searchZing(song,artist),
+    ccMixter: async()=>rank(await searchCCMixter(song,artist),song,artist),
+    'Wikimedia Commons': async()=>rank(await searchCommons(song,artist),song,artist),
+    'Nguồn mở': async () => {
       const r = await searchWeb(song, artist);
       errors.push(...r.errors);
-      return r.candidates.filter(t => t.site === 'Audius' || t.site === 'Internet Archive');
+      return r.candidates.filter(t => ['Audius','Internet Archive','ccMixter','Wikimedia Commons'].includes(t.site));
     }
   };
   function start(site) {
@@ -565,8 +675,9 @@ async function resolveFresh({ song, artist, preferred, skipNCT }) {
   for (const site of order) {
     if (site === 'SoundCloud' && !enabledSC) continue;
     if (site === 'YouTube' && !enabledYT) continue;
+    if (site === 'ZingMP3' && process.env.ENABLE_ZINGMP3 === 'false') continue;
     if ((blockedUntil.get(site) || 0) > Date.now()) {
-      console.warn('[SOURCE SKIP]', site, 'Temporary cooldown after login/bot block');
+      console.warn('[SOURCE SKIP]', site, 'Temporary cooldown after source error or regional restriction');
       continue;
     }
     const sourceStarted = Date.now();
@@ -617,9 +728,12 @@ export async function searchMusicMetadata(song, artist='', options={}) {
     'NhạcCủaTui':()=>searchNCT(request.song,request.artist),
     YouTube:()=>searchYouTubeAPI(request.song,request.artist),
     SoundCloud:()=>searchSoundCloud(request.song,request.artist),
-    'Audius / Internet Archive':async()=>{
+    ZingMP3:()=>searchZing(request.song,request.artist),
+    ccMixter:async()=>rank(await searchCCMixter(request.song,request.artist),request.song,request.artist),
+    'Wikimedia Commons':async()=>rank(await searchCommons(request.song,request.artist),request.song,request.artist),
+    'Nguồn mở':async()=>{
       const result=await searchWeb(request.song,request.artist);
-      return result.candidates.filter(t=>t.site==='Audius' || t.site==='Internet Archive');
+      return result.candidates.filter(t=>['Audius','Internet Archive','ccMixter','Wikimedia Commons'].includes(t.site));
     }
   };
   const pending=new Map();
@@ -632,6 +746,7 @@ export async function searchMusicMetadata(song, artist='', options={}) {
   for(const site of order){
     if(site==='YouTube' && process.env.ENABLE_YOUTUBE!=='true')continue;
     if(site==='SoundCloud' && process.env.ENABLE_SOUNDCLOUD==='false')continue;
+    if(site==='ZingMP3' && process.env.ENABLE_ZINGMP3==='false')continue;
     if((blockedUntil.get(site) || 0)>Date.now())continue;
     const outcome=await start(site);
     if(outcome.error){console.warn('[METADATA ERROR]',site,outcome.error.message);continue;}

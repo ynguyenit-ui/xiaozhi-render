@@ -55,17 +55,17 @@ Endpoint `/stream_pcm` có 3 chế độ, tên endpoint không chứng minh dữ
 
 `/search?song=...` luôn trả JSON cho trang nghe thử. `/audio?provider=catalog&id=test&format=mp3` phát bài thử. Sample rate mặc định 24 kHz, MP3 64 kbps; đây là cấu hình ban đầu, không phải thông số đã xác nhận của firmware.
 
-## 3. Tìm kiếm thông minh trên ba nguồn
+## 3. Tìm kiếm thông minh trên nhiều nguồn
 
-Host tìm các trang thuộc zingmp3.vn, nhaccuatui.com, youtube.com qua Brave Search API (cần BRAVE_SEARCH_API_KEY trong Environment). Đăng ký key tại https://api-dashboard.search.brave.com/ và kiểm tra hạn mức/chi phí của gói bạn chọn. Không đưa key vào repository.
+ZingMP3 được tìm trực tiếp bằng client cộng đồng đã ghim phiên bản trong `package-lock.json`; không cần Brave key; mặc định dùng phiên ẩn danh. Chỉ giữ ứng viên khi API trả URL HTTPS ở mức `128 kbps`; bài không có mức 128, bị VIP, không có quyền theo vùng hoặc không lấy được luồng sẽ bị bỏ qua. Không lấy 320 kbps làm dự phòng, chế độ dùng phiên tài khoản được mô tả ở mục bên dưới. Mặc định thử ZingMP3 → NhạcCủaTui → YouTube → SoundCloud → Nguồn mở. `DEFAULT_MUSIC_SOURCE=zingmp3` áp dụng thứ tự này cho cả metadata và nguồn phát khi ESP32 không chỉ định nguồn. Tắt riêng nguồn này bằng `ENABLE_ZINGMP3=false`.
 
-Nếu chưa có key: chỉ có tìm kiếm YouTube bằng yt-dlp; Zing và NhacCuaTui sẽ báo thiếu cấu hình trong /candidates. Đây là tìm kiếm trang công khai được lập chỉ mục, không phải tìm toàn bộ cơ sở dữ liệu nội bộ của từng dịch vụ.
+NhạcCủaTui cũng được tìm qua API công khai, SoundCloud qua yt-dlp, Audius / Internet Archive qua API của từng nguồn. YouTube dùng `YOUTUBE_API_KEY` khi bật `ENABLE_YOUTUBE=true`. Luồng tìm kiếm hiện tại không cần `BRAVE_SEARCH_API_KEY`. Trang `/candidates` chỉ kiểm tra nhóm nguồn trong `searchWeb`; dùng `/search?song=...` để thử luồng tìm kiếm đầy đủ, và xem log `[ZING SEARCH]` khi các nguồn trước không tìm được bài.
 
 Xếp hạng: bỏ dấu, khớp từ trong tên bài, kiểm tra tên ca sĩ, cộng điểm official, trừ điểm remix/cover/karaoke/live khi bạn không yêu cầu. Thử tối đa 3 ứng viên đủ điểm để lấy luồng âm thanh; không tìm được luồng thì báo lỗi, không trả trang web làm audio. Có thể cần thêm aliases trong catalog nếu giọng nói nhận sai nhiều.
 
 Xem kết quả và lỗi nguồn bằng `/candidates?song=L%E1%BA%A1c%20Tr%C3%B4i&artist=S%C6%A1n%20T%C3%B9ng%20M-TP`.
 
-YouTube và Zing có extractor trong yt-dlp. NhacCuaTui dùng extractor generic nên chưa đảm bảo lấy được âm thanh; nếu không hỗ trợ, thêm source_url/file cho bài đó trong catalog. Danh sách hỗ trợ không bảo đảm mọi bài hoạt động. Render có thể bị YouTube chặn IP/yêu cầu đăng nhập; không tự vượt bước đăng nhập, giới hạn vùng, VIP hay DRM. Chỉ xử lý nội dung công khai truy cập được. Các nguồn chưa được thử live trong môi trường này.
+YouTube và SoundCloud dùng yt-dlp để lấy nguồn phát. Zing dùng trực tiếp URL 128 kbps do API xác nhận, lưu tối đa 60 giây rồi lấy lại; NhạcCủaTui dùng URL MP3 công khai từ API. Render có thể bị YouTube chặn IP/yêu cầu đăng nhập; Zing có thể trả lỗi không khả dụng theo quốc gia của máy chủ. Lỗi quốc gia của một bài chỉ loại luồng của bài đó; host vẫn tìm được metadata và tiếp tục kiểm tra các bài khác. Không tự vượt bước đăng nhập, giới hạn vùng, VIP hay DRM. Render đã tải hoàn chỉnh Sóng Gió và Bạc Phận 128 kbps khi API qua proxy Việt Nam và CDN được tải trực tiếp. Chế độ tài khoản trực tiếp chưa được xác nhận với phiên thật.
 
 Tìm nguồn và kiểm tra ứng viên có thể mất vài chục giây: timeout firmware có thể ngắn hơn. Với bài hay nghe, thêm catalog để bỏ qua tìm kiếm. Không bảo đảm nguồn online chạy ổn định 24/7. Có thể tắt bằng ENABLE_WEB_SEARCH=false.
 
@@ -117,3 +117,53 @@ Giới hạn mặc định: 2 luồng chuyển mã đồng thời, mỗi luồng
 * https://api-dashboard.search.brave.com/app/documentation/web-search/get-started
 
 Đã kiểm tra cả 3 chế độ JSON/MP3/PCM bằng file thử local: MP3 mono 24 kHz, PCM 16-bit mono 24 kHz đúng số byte; kiểm tra 404 khi không có bài và logic xếp hạng tên/ca sĩ/phiên bản. Chưa triển khai vào tài khoản Render và chưa kiểm tra thiết bị ESP32-S3 thực tế.
+
+
+## Thử riêng nguồn Zing MP3
+
+Zing phát MP3 trong khi ghi cache khi `ZING_PROGRESSIVE` không phải `false`. Host đợi bộ đệm mặc định 8 giây âm thanh (`ZING_BUFFER_SECONDS`, từ 3 đến 30), sau đó gửi frame nhạc trong khi tiếp tục tải/chuyển đổi. Nhạc không bị cắt ở 15 phút; vẫn giữ giới hạn kích thước nguồn, file xuất và thời gian chuẩn bị. Bộ đệm 8 giây là lượng âm thanh, không phải cam kết thời gian chờ thực tế. Đặt `ZING_PROGRESSIVE=false` để đợi toàn bộ file như trước.
+
+Dùng `/search?song=Sóng%20Gió&source=zingmp3` hoặc nói “mở bài Sóng Gió trên Zing MP3”. Yêu cầu có nguồn Zing sẽ chỉ thử Zing, để không trả nhầm kết quả từ nguồn khác. Tìm nhạc thông thường ưu tiên ZingMP3, sau đó NhạcCủaTui và các nguồn dự phòng.
+
+Dùng `/candidates?song=Sóng%20Gió&source=zingmp3` để xem bài tìm được, ca sĩ và khả năng phát. `playable=false` với `reason=region_restricted` và `code=-1110` nghĩa là Zing tìm thấy bài nhưng không cho host hiện tại lấy âm thanh. `no_public_128` nghĩa là không có luồng 128 kbps công khai. Không trả bài bị hạn chế như một kết quả có thể nghe được.
+
+
+## Nguồn âm thanh công khai mở rộng
+
+Host giữ nguyên giao thức JSON và âm thanh MP3 128 kbps cho firmware hiện tại. NhạcCủaTui tiếp tục là nguồn mặc định; ccMixter và Wikimedia Commons bổ sung vào nhóm dự phòng cùng Audius và Internet Archive. Không cần tài khoản hay API key cho hai nguồn mới.
+
+- Thử `a night flight trên ccMixter`, hoặc `/search?song=a%20night%20flight&source=ccmixter`.
+- Thử `/candidates?song=Moonlight&source=commons` để xem kết quả Commons.
+- `source=open` chỉ tìm nhóm nguồn mở. JSON trả thêm license, license_url và attribution_url khi nguồn cung cấp.
+- Nguồn mở không đảm bảo có bài nhạc Việt thương mại; host vẫn so khớp tên bài và ca sĩ, không tự thay bằng bài khác.
+- Chỉ nhận MP3 trực tiếp từ ccMixter và tệp âm thanh công khai trên Wikimedia Commons. Luồng tải về được kiểm tra và chuyển sang MP3 128 kbps bằng ffmpeg.
+- Openverse chưa được bật vì API trả 403 trong môi trường thử. Zing vẫn bị hạn chế vùng với các bài đã thử trên Render Singapore; thêm nguồn khác không khắc phục quyền phát Zing.
+
+
+## Podcast kể chuyện Nhac.vn và HIEUTV
+
+- Nói `kể chuyện Tấm Cám`, `mở Tấm Cám` hoặc `podcast Tấm Cám`: chọn đúng bản TẤM CÁM - TRUYỆN CỔ TÍCH của kênh Bình yên Và Thanh thản trên Nhac.vn, từ trang `https://nhac.vn/podcast/tam-cam-truyen-co-tich-pcWEmok`. Có thể nhập nguyên link vào ô tìm kiếm. Host đọc lại URL âm thanh từ trình phát công khai, không cần đăng nhập Nhac.vn.
+- Nói `HIEUTV`, `Hiếu TV`, `podcast HIEU TV` để chọn tập mới nhất trong RSS của HIEU.TV. Nói `HIEUTV tập 24` hoặc `podcast HIEU TV Ikigai` để tìm tập cụ thể. Nếu RSS lỗi hoặc không có tập khớp, không tự thay bằng podcast của kênh khác.
+- Podcast dùng MP3 128 kbps và bộ đệm phát sớm hiện có; yêu cầu `RESPONSE_MODE=json`, `ASYNC_MUSIC_START=true`. `ENABLE_PODCAST=false` tắt podcast. Các truyện khác tiếp tục tìm qua directory/RSS hiện có; tích hợp Nhac.vn này chỉ chọn bản Tấm Cám đã nêu.
+
+## Proxy Việt Nam riêng cho Zing MP3
+
+### Thử phiên đăng nhập qua kết nối trực tiếp
+
+Biến bí mật `ZING_SESSION_COOKIE` nhận giá trị của header `Cookie` từ phiên Zing MP3 của chính bạn. Chỉ cấu hình trong Render Environment; không gửi cookie, mật khẩu hoặc OTP trong chat, không ghi vào GitHub. Cookie có quyền truy cập tài khoản và có thể hết hạn; bản này không tự đăng nhập Zalo hoặc tự gia hạn phiên.
+
+Khi biến này có giá trị, API Zing dùng phiên đó qua HTTPS trực tiếp, bỏ qua `ZING_PROXY_URL` dù proxy vẫn còn trong cấu hình. Không lấy cookie ẩn danh trước mỗi phiên API; không gửi cookie tài khoản cho CDN âm thanh hay proxy. Yêu cầu chỉ được gửi đến hai endpoint tìm kiếm và lấy luồng trên `zingmp3.vn`, không theo redirect mang theo cookie. Xóa `ZING_SESSION_COOKIE` để trở lại cấu hình trước.
+
+Đây là chế độ thử nghiệm chưa xác nhận với tài khoản thật. Đăng nhập không có nghĩa IP Render được cấp quyền nghe bài bị giới hạn vùng: mã `-1110` vẫn được giữ là `region_restricted`. Kiểm tra bằng cùng bài trên `/candidates` rồi `/search`, xác nhận log `AUDIO READY`/`PLAY READY` và nghe trên ESP32. Không kết luận thành công chỉ từ HTTP 200 của âm báo chờ.
+
+Đặt biến môi trường bí mật `ZING_PROXY_URL` trên Render với dạng `http://USERNAME:PASSWORD@HOST:PORT` hoặc proxy HTTPS. Ký tự đặc biệt trong username/password cần URL-encode. Không ghi giá trị thật vào GitHub hoặc gửi trong chat.
+
+Khi biến này được cấu hình, cả phiên truy cập ẩn danh, tìm kiếm, lấy luồng Zing và tải âm thanh Zing đều đi qua cùng proxy. Cấu hình này không đổi địa chỉ Custom MUSIC URL của firmware. Không đặt global HTTP_PROXY cho toàn bộ ứng dụng. Bỏ ZING_PROXY_URL để quay lại kết nối trực tiếp. Hỗ trợ HTTP/HTTPS CONNECT, không hỗ trợ SOCKS ở bản này.
+
+Nếu API qua proxy lấy được URL 128 kbps nhưng proxy không tải được âm thanh, có thể thử `ZING_PROXY_AUDIO=false`: phiên và API Zing tiếp tục qua proxy, Render tải MP3 trực tiếp. Chỉ bật chế độ này sau khi kiểm tra CDN chấp nhận URL từ IP Render; không mặc định giả định URL dùng được ở IP khác.
+
+Chẩn đoán một lần lúc khởi động: `ZING_PROXY_CHECKS` là tối đa 20 URL proxy HTTP/HTTPS công cộng, phân cách bằng dấu phẩy, không chứa username/password. Kết quả đọc tại `/zing-proxy-check`; mỗi proxy thử tối đa 35 giây, 4 phép thử song song. Chẩn đoán không tự chọn proxy phát nhạc. Bỏ biến này sau khi thử để tránh lặp lại khi dịch vụ khởi động.
+
+Yêu cầu proxy có IP ra Internet tại Việt Nam, hỗ trợ HTTPS CONNECT, và đủ băng thông âm thanh. Ưu tiên phiên IP cố định trong lúc lấy URL và tải bài. Chỉ kiểm tra luồng công khai 128 kbps; không thay quyền truy cập VIP. 128 kbps tương đương khoảng 57.6 MB/giờ chưa tính overhead; proxy có tính phí theo dung lượng cần dự trù trước.
+
+Kiểm tra `/candidates?song=S%C3%B3ng%20Gi%C3%B3&source=zingmp3` rồi `/search?song=S%C3%B3ng%20Gi%C3%B3&source=zingmp3` và URL audio trả về. Tiêu chí đạt: API Zing err=0 có 128, host audio HTTP 200 audio/mpeg, sau đó nghe trên ESP32. Nếu chưa có proxy hoạt động thì chưa xác nhận vượt hạn chế vùng.

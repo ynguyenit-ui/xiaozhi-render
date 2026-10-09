@@ -4,6 +4,8 @@ RUN deno --version
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates python3 python3-venv && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/yt && /opt/yt/bin/pip install --upgrade --no-cache-dir "yt-dlp[default]"
 WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY --chown=node:node . .
 USER node
 ENV PORT=10000
@@ -11,5 +13,5 @@ ENV PYTHON_PATH=/opt/yt/bin/python3
 ENV YOUTUBE_JS_RUNTIME=deno
 ENV DENO_DIR=/tmp/deno-cache
 EXPOSE 10000
-COPY podcast.js podcast-rss.js podcast-rss.py ./
+COPY podcast.js podcast-nhac.js podcast-rss.js podcast-rss.py ./
 CMD ["node", "server.js"]

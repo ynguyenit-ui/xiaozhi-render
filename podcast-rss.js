@@ -37,15 +37,15 @@ function parse(xml){
   });
 }
 const normalize=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[đĐ]/g,'d').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-export async function searchPodcastRSS(query,rows=[]){
-  let feeds=[...new Set(rows.map(r=>r.feedUrl).filter(Boolean))].slice(0,3);
+export async function searchPodcastRSS(query,rows=[],knownFeeds=[]){
+  let feeds=[...new Set([...knownFeeds,...rows.map(r=>r.feedUrl).filter(Boolean)])].slice(0,3);
   if(!feeds.length){
     const u=new URL('https://itunes.apple.com/search');u.search=new URLSearchParams({term:query,media:'podcast',entity:'podcast',country:'VN',limit:'3'});
     const r=await fetch(u,{signal:AbortSignal.timeout(3000)});if(!r.ok){await r.body?.cancel();return null;}
     const data=await r.json();feeds=[...new Set((data.results||[]).map(r=>r.feedUrl).filter(Boolean))].slice(0,3);
   }
   const results=await Promise.allSettled(feeds.map(async feed=>{
-    const xml=await readFeed(feed,AbortSignal.timeout(4000));return (await parse(xml)).map(row=>({...row,feed}));
+    const xml=await readFeed(feed,AbortSignal.timeout(knownFeeds.length?8000:4000));return (await parse(xml)).map(row=>({...row,feed}));
   }));
   for(const result of results)if(result.status==='rejected')console.warn('[PODCAST RSS SOURCE FAILED]',result.reason?.message || 'RSS unavailable');
   const wanted=normalize(query),words=wanted.split(' ');
@@ -56,7 +56,7 @@ export async function searchPodcastRSS(query,rows=[]){
     const overlap=words.filter(w=>text.split(' ').includes(w)).length/words.length;
     const score=overlap*100+(title===wanted?250:show===wanted?180:title.includes(wanted)?120:0);
     return {row,overlap,score};
-  }).filter(r=>r.overlap>=.75).sort((a,b)=>b.score-a.score || (Date.parse(b.row.published)||0)-(Date.parse(a.row.published)||0));
+  }).filter(r=>r.overlap>=.75 && (!knownFeeds.length || words.filter(w=>/^\d+$/.test(w)).every(w=>normalize(r.row.title).split(' ').includes(w)))).sort((a,b)=>b.score-a.score || (Date.parse(b.row.published)||0)-(Date.parse(a.row.published)||0));
   const row=candidates[0]?.row;if(!row)return null;
   console.log('[PODCAST RSS]',JSON.stringify({query,title:row.title}));
   return {id:'rss-'+createHash('sha256').update(row.guid || row.url).digest('hex').slice(0,24),provider:'podcast',site:'Podcast RSS',title:row.title,artist:row.show,duration:row.duration,source_page:row.feed,podcast_source:row.url};
