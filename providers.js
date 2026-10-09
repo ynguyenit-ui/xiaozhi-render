@@ -215,7 +215,7 @@ async function zingAudio(page){
     cacheZingStream(id,response);
     cached=zingStreamCache.get(id);
   }
-  return {url:cached.url,headers:{Referer:'https://zingmp3.vn/'},zing_proxy:zingProxyEnabled()};
+  return {url:cached.url,headers:{Referer:'https://zingmp3.vn/'},zing_proxy:zingProxyEnabled() && process.env.ZING_PROXY_AUDIO!=='false'};
 }
 function zingCandidate(song){
   const id=String(song?.encodeId || '');

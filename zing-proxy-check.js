@@ -2,7 +2,7 @@ import zingPackage from 'mp3-api';
 import { createZingTransport, configureZingProxyClient } from './zing-proxy.js';
 
 export const proxyChecks={state:'disabled',results:[]};
-export async function checkZingProxy(proxyURL,timeoutMs=25000) {
+export async function checkZingProxy(proxyURL,timeoutMs=35000) {
   const row={proxy:proxyURL,stage:'session',playable:false};
   const transport=createZingTransport(proxyURL);
   let timer;
@@ -14,7 +14,7 @@ export async function checkZingProxy(proxyURL,timeoutMs=25000) {
     row.stage='search';
     const search=await client.search('Sóng Gió Jack');
     row.search_code=search.err;
-    row.found=search.data?.items?.songs?.length || 0;
+    row.found=search.data?.songs?.length || 0;
     row.stage='stream';
     client.CTIME=String(Math.floor(Date.now()/1000));
     const stream=await client.getSong('R9PAHzNMWGek');
@@ -23,12 +23,22 @@ export async function checkZingProxy(proxyURL,timeoutMs=25000) {
     const u=new URL(stream.data['128']);
     if(u.protocol!=='https:' || u.username || u.password)throw Error('Invalid audio URL');
     row.stage='audio';
-    const r=await transport.request(u,{headers:{Referer:'https://zingmp3.vn/',Range:'bytes=0-4095'},signal:AbortSignal.timeout(6000)});
-    row.audio_status=r.status;row.content_type=r.headers.get('content-type');
-    const reader=r.body?.getReader();
-    try { const chunk=await reader?.read();row.bytes=chunk?.value?.length || 0; }
-    finally { await reader?.cancel().catch(()=>{}); }
-    row.playable=r.ok && /^audio\//i.test(row.content_type || '') && row.bytes>0;
+    async function probe(request){
+      const r=await request(u,{headers:{Referer:'https://zingmp3.vn/',Range:'bytes=0-4095'},signal:AbortSignal.timeout(6000)});
+      const result={status:r.status,content_type:r.headers.get('content-type'),bytes:0};
+      const reader=r.body?.getReader();
+      try { const chunk=await reader?.read();result.bytes=chunk?.value?.length || 0; }
+      finally { await reader?.cancel().catch(()=>{}); }
+      result.playable=r.ok && /^audio\//i.test(result.content_type || '') && result.bytes>0;
+      return result;
+    }
+    try {row.proxy_audio=await probe(transport.request);row.playable=row.proxy_audio.playable;}
+    catch(error){row.proxy_audio_error=error.message;}
+    if(row.playable)row.audio_transport='proxy';
+    else {
+      row.direct_audio=await probe(fetch);row.playable=row.direct_audio.playable;
+      if(row.playable)row.audio_transport='direct';
+    }
     return row;
   } catch(error) { row.error=error.message;return row; }
   finally { await transport.destroy(); }

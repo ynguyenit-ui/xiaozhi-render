@@ -144,6 +144,10 @@ Host giữ nguyên giao thức JSON và âm thanh MP3 128 kbps cho firmware hi�
 
 Khi biến này được cấu hình, cả phiên truy cập ẩn danh, tìm kiếm, lấy luồng Zing và tải âm thanh Zing đều đi qua cùng proxy. Cấu hình này không đổi địa chỉ Custom MUSIC URL của firmware. Không đặt global HTTP_PROXY cho toàn bộ ứng dụng. Bỏ ZING_PROXY_URL để quay lại kết nối trực tiếp. Hỗ trợ HTTP/HTTPS CONNECT, không hỗ trợ SOCKS ở bản này.
 
+Nếu API qua proxy lấy được URL 128 kbps nhưng proxy không tải được âm thanh, có thể thử `ZING_PROXY_AUDIO=false`: phiên và API Zing tiếp tục qua proxy, Render tải MP3 trực tiếp. Chỉ bật chế độ này sau khi kiểm tra CDN chấp nhận URL từ IP Render; không mặc định giả định URL dùng được ở IP khác.
+
+Chẩn đoán một lần lúc khởi động: `ZING_PROXY_CHECKS` là tối đa 20 URL proxy HTTP/HTTPS công cộng, phân cách bằng dấu phẩy, không chứa username/password. Kết quả đọc tại `/zing-proxy-check`; mỗi proxy thử tối đa 35 giây, 4 phép thử song song. Chẩn đoán không tự chọn proxy phát nhạc. Bỏ biến này sau khi thử để tránh lặp lại khi dịch vụ khởi động.
+
 Yêu cầu proxy có IP ra Internet tại Việt Nam, hỗ trợ HTTPS CONNECT, và đủ băng thông âm thanh. Ưu tiên phiên IP cố định trong lúc lấy URL và tải bài. Chỉ kiểm tra luồng công khai 128 kbps; không thay quyền truy cập VIP. 128 kbps tương đương khoảng 57.6 MB/giờ chưa tính overhead; proxy có tính phí theo dung lượng cần dự trù trước.
 
 Kiểm tra `/candidates?song=S%C3%B3ng%20Gi%C3%B3&source=zingmp3` rồi `/search?song=S%C3%B3ng%20Gi%C3%B3&source=zingmp3` và URL audio trả về. Tiêu chí đạt: API Zing err=0 có 128, host audio HTTP 200 audio/mpeg, sau đó nghe trên ESP32. Nếu chưa có proxy hoạt động thì chưa xác nhận vượt hạn chế vùng.
