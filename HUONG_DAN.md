@@ -140,6 +140,12 @@ Host giữ nguyên giao thức JSON và âm thanh MP3 128 kbps cho firmware hi�
 - Openverse chưa được bật vì API trả 403 trong môi trường thử. Zing vẫn bị hạn chế vùng với các bài đã thử trên Render Singapore; thêm nguồn khác không khắc phục quyền phát Zing.
 
 
+## Podcast kể chuyện Nhac.vn và HIEUTV
+
+- Nói `kể chuyện Tấm Cám`, `mở Tấm Cám` hoặc `podcast Tấm Cám`: chọn đúng bản TẤM CÁM - TRUYỆN CỔ TÍCH của kênh Bình yên Và Thanh thản trên Nhac.vn, từ trang `https://nhac.vn/podcast/tam-cam-truyen-co-tich-pcWEmok`. Có thể nhập nguyên link vào ô tìm kiếm. Host đọc lại URL âm thanh từ trình phát công khai, không cần đăng nhập Nhac.vn.
+- Nói `HIEUTV`, `Hiếu TV`, `podcast HIEU TV` để chọn tập mới nhất trong RSS của HIEU.TV. Nói `HIEUTV tập 24` hoặc `podcast HIEU TV Ikigai` để tìm tập cụ thể. Nếu RSS lỗi hoặc không có tập khớp, không tự thay bằng podcast của kênh khác.
+- Podcast dùng MP3 128 kbps và bộ đệm phát sớm hiện có; yêu cầu `RESPONSE_MODE=json`, `ASYNC_MUSIC_START=true`. `ENABLE_PODCAST=false` tắt podcast. Các truyện khác tiếp tục tìm qua directory/RSS hiện có; tích hợp Nhac.vn này chỉ chọn bản Tấm Cám đã nêu.
+
 ## Proxy Việt Nam riêng cho Zing MP3
 
 ### Thử phiên đăng nhập qua kết nối trực tiếp
