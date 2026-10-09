@@ -5,7 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import zingPackage from 'mp3-api';
 import { searchCCMixter, searchCommons, openAudioURL, ccMixterFetch } from './open-sources.js';
+import { configureZingProxyClient, zingFetch, zingProxyEnabled } from './zing-proxy.js';
 const ZingMp3 = zingPackage.ZingMp3;
+configureZingProxyClient(ZingMp3);
 export const normalize = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[đĐ]/g,'d').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 function setting(name, fallback, min, max) {
   const n = Number(process.env[name]);
@@ -213,7 +215,7 @@ async function zingAudio(page){
     cacheZingStream(id,response);
     cached=zingStreamCache.get(id);
   }
-  return {url:cached.url,headers:{Referer:'https://zingmp3.vn/'}};
+  return {url:cached.url,headers:{Referer:'https://zingmp3.vn/'},zing_proxy:zingProxyEnabled()};
 }
 function zingCandidate(song){
   const id=String(song?.encodeId || '');
@@ -541,7 +543,7 @@ export async function searchWeb(song,artist='') {
   return result;
 }
 async function probeUncached(source) {
-  const transport=new URL(source.url).hostname==='ccmixter.org'?ccMixterFetch:fetch;
+  const transport=source.zing_proxy?zingFetch:new URL(source.url).hostname==='ccmixter.org'?ccMixterFetch:fetch;
   const r=await transport(source.url,{headers:{...(source.headers || {}),Range:'bytes=0-1023'},signal:AbortSignal.timeout(setting('AUDIO_PROBE_TIMEOUT_MS', 4000, 1000, 15000)),redirect:'follow'});
   const type=r.headers.get('content-type') || '';
   if(!r.ok || !r.body || /json|text\/html/i.test(type)){await r.body?.cancel();throw Error(`Audio unavailable: HTTP ${r.status}`);}

@@ -1,1 +1,17 @@
-{"name":"xiaozhi-render-music","version":"1.0.0","private":true,"type":"module","scripts":{"start":"node server.js","test":"node --test"},"engines":{"node":">=22"},"dependencies":{"mp3-api":"https://codeload.github.com/nvhung9/mp3-api/tar.gz/98c67474fed273112f1123ab92df9bbf50d2c365"}}
+{
+  "name": "xiaozhi-render-music",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "mp3-api": "https://codeload.github.com/nvhung9/mp3-api/tar.gz/98c67474fed273112f1123ab92df9bbf50d2c365",
+    "undici": "8.11.2"
+  }
+}

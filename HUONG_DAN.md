@@ -136,3 +136,14 @@ Host giữ nguyên giao thức JSON và âm thanh MP3 128 kbps cho firmware hi�
 - Nguồn mở không đảm bảo có bài nhạc Việt thương mại; host vẫn so khớp tên bài và ca sĩ, không tự thay bằng bài khác.
 - Chỉ nhận MP3 trực tiếp từ ccMixter và tệp âm thanh công khai trên Wikimedia Commons. Luồng tải về được kiểm tra và chuyển sang MP3 128 kbps bằng ffmpeg.
 - Openverse chưa được bật vì API trả 403 trong môi trường thử. Zing vẫn bị hạn chế vùng với các bài đã thử trên Render Singapore; thêm nguồn khác không khắc phục quyền phát Zing.
+
+
+## Proxy Việt Nam riêng cho Zing MP3
+
+Đặt biến môi trường bí mật `ZING_PROXY_URL` trên Render với dạng `http://USERNAME:PASSWORD@HOST:PORT` hoặc proxy HTTPS. Ký tự đặc biệt trong username/password cần URL-encode. Không ghi giá trị thật vào GitHub hoặc gửi trong chat.
+
+Khi biến này được cấu hình, cả phiên truy cập ẩn danh, tìm kiếm, lấy luồng Zing và tải âm thanh Zing đều đi qua cùng proxy. Cấu hình này không đổi địa chỉ Custom MUSIC URL của firmware. Không đặt global HTTP_PROXY cho toàn bộ ứng dụng. Bỏ ZING_PROXY_URL để quay lại kết nối trực tiếp. Hỗ trợ HTTP/HTTPS CONNECT, không hỗ trợ SOCKS ở bản này.
+
+Yêu cầu proxy có IP ra Internet tại Việt Nam, hỗ trợ HTTPS CONNECT, và đủ băng thông âm thanh. Ưu tiên phiên IP cố định trong lúc lấy URL và tải bài. Chỉ kiểm tra luồng công khai 128 kbps; không thay quyền truy cập VIP. 128 kbps tương đương khoảng 57.6 MB/giờ chưa tính overhead; proxy có tính phí theo dung lượng cần dự trù trước.
+
+Kiểm tra `/candidates?song=S%C3%B3ng%20Gi%C3%B3&source=zingmp3` rồi `/search?song=S%C3%B3ng%20Gi%C3%B3&source=zingmp3` và URL audio trả về. Tiêu chí đạt: API Zing err=0 có 128, host audio HTTP 200 audio/mpeg, sau đó nghe trên ESP32. Nếu chưa có proxy hoạt động thì chưa xác nhận vượt hạn chế vùng.

@@ -1,5 +1,6 @@
 // Cache hoàn chỉnh cho nguồn cũ; NCT có thể phát trong khi ghi cache.
 import fs from 'node:fs';
+import { zingFetch } from './zing-proxy.js';
 import { ccMixterFetch } from './open-sources.js';
 import os from 'node:os';
 import path from 'node:path';
@@ -49,7 +50,7 @@ export function createAudioCache(sourceFor, rate) {
       const headers = new Headers(source.headers || {});
       headers.delete('range'); headers.set('Accept-Encoding', 'identity');
       if(segmented)headers.set('Range', `bytes=${start}-${end}`);
-      const transport=new URL(source.url).hostname==='ccmixter.org'?ccMixterFetch:fetch;
+      const transport=source.zing_proxy?zingFetch:new URL(source.url).hostname==='ccmixter.org'?ccMixterFetch:fetch;
       const response = await transport(source.url, {headers,redirect:'follow',signal:combined});
       if(!response.ok || !response.body) {
         await response.body?.cancel();throw Error(`Audio download HTTP ${response.status}`);
