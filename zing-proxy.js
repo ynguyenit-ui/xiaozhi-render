@@ -51,6 +51,8 @@ export function configureZingProxyClient(client, providedTransport=null) {
     })();
     try{return await pending;}finally{pending=null;}
   }
+  // Prepare the anonymous session before the first firmware request arrives.
+  if(!providedTransport)void anonymousCookie().catch(()=>{});
   client.requestZingMp3=async (apiPath,params)=>{
     if(!['/api/v2/search/multi','/api/v2/song/get/streaming'].includes(apiPath))throw Error('Unsupported proxied Zing API');
     const u=new URL(apiPath,'https://zingmp3.vn');
